@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FinePdfAtom: text from screen
+Name[ru]=Текст с экрана (FinePdfAtom)
+Comment[ru]=Выделите область экрана — текст окажется в буфере обмена
+Exec=finepdfatom --screen
+Icon=finepdfatom
+Terminal=false
+Categories=Office;Utility;OCR;

@@ -1,0 +1,29 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=FinePdfAtom
+Name[ru]=FinePdfAtom — распознавание текста
+GenericName=Text Recognition (OCR)
+GenericName[ru]=Распознавание текста
+Comment=Offline OCR for scans, photos, PDF and screen
+Comment[ru]=Распознавание текста со сканов, фото, PDF и экрана без интернета
+Exec=finepdfatom %F
+TryExec=finepdfatom
+Icon=finepdfatom
+Terminal=false
+Categories=Office;Graphics;Scanning;OCR;Qt;
+Keywords=OCR;scan;pdf;text;распознавание;скан;текст;
+MimeType=application/pdf;image/png;image/jpeg;image/tiff;image/bmp;image/gif;image/webp;image/x-portable-anymap;
+StartupNotify=true
+StartupWMClass=finepdfatom
+Actions=screen;clipboard;
+
+[Desktop Action screen]
+Name=Recognize screen area
+Name[ru]=Распознать область экрана
+Exec=finepdfatom --screen
+
+[Desktop Action clipboard]
+Name=Recognize image from clipboard
+Name[ru]=Распознать картинку из буфера
+Exec=finepdfatom --clipboard
