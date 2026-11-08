@@ -1,6 +1,8 @@
 """Дымовой тест интерфейса: открыть образцы, распознать, сделать снимки окна, сохранить во все форматы."""
 import os
 import sys
+import faulthandler, signal
+faulthandler.register(signal.SIGUSR1, all_threads=True)
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -20,7 +22,6 @@ from finepdfatom.gui import theme  # noqa: E402
 app.setPalette(theme.palette(theme_name))
 app.setStyleSheet(theme.stylesheet(theme_name))
 w = MainWindow(cfg)
-w.resize(1500, 900)
 w.show()
 steps = []
 

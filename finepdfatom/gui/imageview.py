@@ -131,18 +131,27 @@ class ImageView(QGraphicsView):
         if self.pix is None:
             return
         self._fit = True
+        # в режиме «по размеру» полосы прокрутки не нужны; иначе их появление/исчезновение
+        # меняет размер области и вызывает бесконечный цикл подгонки
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.fitInView(self.pix, Qt.KeepAspectRatio)
         self.zoomChanged.emit(self.transform().m11())
 
-    def zoom(self, factor):
+    def _free_scroll(self):
         self._fit = False
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+    def zoom(self, factor):
+        self._free_scroll()
         cur = self.transform().m11()
         factor = max(0.03 / cur, min(16.0 / cur, factor))
         self.scale(factor, factor)
         self.zoomChanged.emit(self.transform().m11())
 
     def zoom_100(self):
-        self._fit = False
+        self._free_scroll()
         self.resetTransform()
         self.zoomChanged.emit(1.0)
 
@@ -154,7 +163,7 @@ class ImageView(QGraphicsView):
     def wheelEvent(self, e):
         # Ctrl+колесо — масштаб; без Ctrl — прокрутка (а если прокручивать некуда — масштаб)
         d = e.angleDelta().y()
-        if d and (e.modifiers() & Qt.ControlModifier or not self.verticalScrollBar().isVisible()):
+        if d and (e.modifiers() & Qt.ControlModifier or self._fit):
             self.zoom(1.15 if d > 0 else 1 / 1.15)
             return
         super().wheelEvent(e)

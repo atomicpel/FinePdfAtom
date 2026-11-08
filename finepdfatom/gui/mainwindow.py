@@ -102,9 +102,14 @@ class MainWindow(QMainWindow):
         self._export = None
         self.setWindowTitle("FinePdfAtom — распознавание текста")
         self.setWindowIcon(icons.app_icon())
-        self.resize(1400, 860)
+        g = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1440, int(g.width() * 0.92)), min(900, int(g.height() * 0.9)))
         self.setAcceptDrops(True)
         self._build()
+        if g.width() < 1500:
+            # ноутбуки 1366×768: подписи остаются только у главных кнопок
+            for b in self._compact:
+                b.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self._update_actions()
         self._update_lang_button()
 
@@ -169,12 +174,14 @@ class MainWindow(QMainWindow):
         brand.addWidget(bs)
         tl.addLayout(brand)
         tl.addWidget(self._sep())
-        tl.addWidget(self._tool("Открыть", "open", self.open_files, "Изображения, TIFF, PDF", "Ctrl+O"))
-        tl.addWidget(self._tool("Сканер", "scan", self.open_scanner, "Сканировать через SANE", "Ctrl+Shift+S"))
-        tl.addWidget(self._tool("Экран", "screen", self.capture_screen, "Распознать область экрана",
-                                "Ctrl+Shift+E"))
-        tl.addWidget(self._tool("Буфер", "clipboard", self.paste_clipboard, "Вставить картинку из буфера",
-                                "Ctrl+Shift+V"))
+        self._compact = []
+        for args in (("Открыть", "open", self.open_files, "Изображения, TIFF, PDF", "Ctrl+O"),
+                     ("Сканер", "scan", self.open_scanner, "Сканировать через SANE", "Ctrl+Shift+S"),
+                     ("Экран", "screen", self.capture_screen, "Распознать область экрана", "Ctrl+Shift+E"),
+                     ("Буфер", "clipboard", self.paste_clipboard, "Вставить картинку из буфера", "Ctrl+Shift+V")):
+            b = self._tool(*args)
+            self._compact.append(b)
+            tl.addWidget(b)
         tl.addWidget(self._sep())
 
         self.btn_rec = self._tool("Распознать", "recognize", self.recognize_all,
@@ -191,6 +198,7 @@ class MainWindow(QMainWindow):
         self.btn_area = self._tool("Область", "area", self.toggle_region_mode,
                                    "Выделить мышью область для распознавания", checkable=True)
         tl.addWidget(self.btn_area)
+        self._compact.append(self.btn_area)
         tl.addWidget(self._sep())
 
         self.btn_save = self._tool("Сохранить", "save", None, "Сохранить документ", None)
@@ -204,6 +212,7 @@ class MainWindow(QMainWindow):
         self.btn_copy = self._tool("Копировать", "copy", self.copy_all, "Скопировать текст всех страниц",
                                    "Ctrl+Shift+C")
         tl.addWidget(self.btn_copy)
+        self._compact += [self.btn_save, self.btn_copy]
         tl.addStretch(1)
 
         self.btn_lang = self._tool("", "lang", None, "Языки распознавания")
@@ -251,15 +260,12 @@ class MainWindow(QMainWindow):
         ll.addLayout(hdr)
         self.list = QListWidget()
         self.list.setObjectName("Pages")
-        self.list.setIconSize(QSize(THUMB, THUMB))
-        self.list.setViewMode(QListWidget.IconMode)
-        self.list.setFlow(QListWidget.TopToBottom)
-        self.list.setWrapping(False)
-        self.list.setMovement(QListWidget.Static)
-        self.list.setResizeMode(QListWidget.Adjust)
+        self.list.setIconSize(QSize(64, 84))
+        self.list.setViewMode(QListWidget.ListMode)
         self.list.setSelectionMode(QListWidget.ExtendedSelection)
         self.list.setWordWrap(True)
-        self.list.setGridSize(QSize(THUMB + 40, THUMB + 54))
+        self.list.setSpacing(1)
+        self.list.setTextElideMode(Qt.ElideMiddle)
         self.list.currentRowChanged.connect(self._select_row)
         self.list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._list_menu)
@@ -274,7 +280,7 @@ class MainWindow(QMainWindow):
         tools.addWidget(self._small("delete", "Удалить страницы (Del)", self.delete_pages))
         QShortcut(QKeySequence.Delete, self.list, activated=self.delete_pages)
         ll.addLayout(tools)
-        left.setMinimumWidth(180)
+        left.setMinimumWidth(220)
         split.addWidget(left)
 
         # Изображение
@@ -367,7 +373,7 @@ class MainWindow(QMainWindow):
         self.text.edited.connect(self._text_edited)
         rl.addWidget(self.text, 1)
         split.addWidget(right)
-        split.setSizes([200, 700, 500])
+        split.setSizes([240, 700, 480])
         split.setStretchFactor(1, 3)
         split.setStretchFactor(2, 2)
         root.addWidget(body, 1)
@@ -500,7 +506,6 @@ class MainWindow(QMainWindow):
             self.pages.append(p)
             it = QListWidgetItem(r.label)
             it.setData(Qt.UserRole, id(p))
-            it.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
             ph = QPixmap(THUMB, int(THUMB * 1.3))
             ph.fill(QColor(self.colors["panel2"]))
             it.setIcon(QIcon(ph))
@@ -547,7 +552,11 @@ class MainWindow(QMainWindow):
                 badge = "✘ ошибка"
             else:
                 badge = ""
-            label = p.ref.label if len(p.ref.label) < 26 else p.ref.label[:24] + "…"
+            label = p.ref.label.replace(" — ", "\n")
+            first, _, rest = label.partition("\n")
+            if len(first) > 22:
+                first = first[:10] + "…" + first[-10:]
+            label = first + ("\n" + rest if rest else "")
             it.setText("%d. %s%s" % (n, label, ("\n" + badge) if badge else ""))
             it.setToolTip(p.ref.label + ("\n" + p.error if p.error else ""))
             if p.thumb is not None:

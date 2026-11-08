@@ -96,7 +96,7 @@ fi
 
 # ------------------------------------------------------------------ Python
 log "Python 3.11 (python-build-standalone)"
-[ -f "$SRC/python.tar.gz" ] || curl -fsSL -o "$SRC/python.tar.gz" "$PY_URL"
+[ -f "$SRC/python.tar.gz" ] || curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o "$SRC/python.tar.gz" "$PY_URL"
 rm -rf "$STAGE" && mkdir -p "$ROOT"
 tar -xzf "$SRC/python.tar.gz" -C "$ROOT"
 PY=$ROOT/python/bin/python3
