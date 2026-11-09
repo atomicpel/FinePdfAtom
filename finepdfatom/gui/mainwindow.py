@@ -661,6 +661,7 @@ class MainWindow(QMainWindow):
                                    ("Страница ещё не распознана" if p else ""))
             return
         r = p.result
+        self.text.set_langs(self.config.get("ocr/langs", "rus+eng"))
         if p.text is not None:
             self.text.load(p.text)
         else:
@@ -680,7 +681,7 @@ class MainWindow(QMainWindow):
         self.chip_conf.show()
         n = self.text.low_conf_count()
         if n:
-            self.btn_low.setText("Сомнительных слов: %d  ›" % n)
+            self.btn_low.setText("Проверить слов: %d  ›" % n)
             self.btn_low.show()
         notes = "Обработка: " + r.notes if r.notes else ""
         if p.text is not None:

@@ -69,3 +69,28 @@ def main(out):
 
 if __name__ == "__main__":
     main(sys.argv[1] if len(sys.argv) > 1 else "samples")
+
+
+def photo_of_page(src, dst):
+    """Фото листа на столе: перспектива, тёмный фон, неравномерный свет, JPEG."""
+    import cv2
+    import numpy as np
+    page = cv2.imread(src)
+    page = cv2.resize(page, None, fx=0.75, fy=0.75, interpolation=cv2.INTER_AREA)
+    h, w = page.shape[:2]
+    W, H = int(w * 1.35), int(h * 1.2)
+    bg = np.zeros((H, W, 3), np.uint8)
+    bg[:] = (40, 60, 85)
+    noise = np.random.default_rng(3).integers(0, 25, (H, W, 1), dtype=np.uint8)
+    bg = cv2.add(bg, np.repeat(noise, 3, axis=2))
+    src_q = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    dst_q = np.float32([[W * 0.18, H * 0.06], [W * 0.86, H * 0.03], [W * 0.95, H * 0.95], [W * 0.08, H * 0.9]])
+    m = cv2.getPerspectiveTransform(src_q, dst_q)
+    warped = cv2.warpPerspective(page, m, (W, H))
+    mask = cv2.warpPerspective(np.full((h, w), 255, np.uint8), m, (W, H))
+    out = bg.copy()
+    out[mask > 0] = warped[mask > 0]
+    xs = np.linspace(1.0, 0.72, W, dtype=np.float32)[None, :, None]
+    out = np.clip(out.astype(np.float32) * xs, 0, 255).astype(np.uint8)
+    out = cv2.GaussianBlur(out, (3, 3), 0)
+    cv2.imwrite(dst, out, [cv2.IMWRITE_JPEG_QUALITY, 80])

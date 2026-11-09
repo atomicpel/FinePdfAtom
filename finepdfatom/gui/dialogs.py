@@ -98,7 +98,9 @@ class SettingsDialog(QDialog):
         self.dehyph.setChecked(st.dehyphenate)
         self.pdf_text = QCheckBox("Брать готовый текст из PDF, если он есть")
         self.pdf_text.setChecked(st.use_pdf_text)
-        for w in (self.keep_lines, self.dehyph, self.pdf_text):
+        self.spell = QCheckBox("Проверять орфографию и исправлять явные ошибки")
+        self.spell.setChecked(st.spellcheck)
+        for w in (self.keep_lines, self.dehyph, self.pdf_text, self.spell):
             f.addRow(w)
         self.quality = QComboBox()
         for k, t in export.PDF_QUALITY.items():
@@ -156,7 +158,8 @@ class SettingsDialog(QDialog):
                                     deskew=self.deskew.isChecked(), rescale=self.rescale.isChecked(),
                                     clean_background=self.clean.isChecked(), denoise=self.denoise.isChecked()),
             use_pdf_text=self.pdf_text.isChecked(), keep_lines=self.keep_lines.isChecked(),
-            dehyphenate=self.dehyph.isChecked(), threads=self.threads.value())
+            dehyphenate=self.dehyph.isChecked(), threads=self.threads.value(),
+            spellcheck=self.spell.isChecked())
         self.config.save_ocr_settings(st)
         self.config.pdf_quality = self.quality.currentData()
         self.config.theme = self.theme.currentData()

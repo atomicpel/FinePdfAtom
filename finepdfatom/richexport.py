@@ -68,11 +68,16 @@ def save_docx(models, path, title=""):
         section.right_margin = Pt(m.margins[2])
         section.bottom_margin = Pt(m.margins[3])
 
+    pending = {"col": False}
+
     def add_para(container, p: Para, cell=False):
         if p.heading and not cell:
             par = container.add_paragraph(style="Heading %d" % min(3, p.heading))
         else:
             par = container.add_paragraph()
+        if pending["col"] and not cell:
+            par.add_run().add_break(WD_BREAK.COLUMN)
+            pending["col"] = False
         pf = par.paragraph_format
         pf.alignment = AL.get(p.align, WD_ALIGN_PARAGRAPH.LEFT)
         if p.indent:
@@ -136,8 +141,7 @@ def save_docx(models, path, title=""):
                 geometry(sec, m)
                 set_cols(sec, it.n, it.gap)
             elif isinstance(it, ColumnBreak):
-                last = d.paragraphs[-1] if d.paragraphs else d.add_paragraph()
-                last.add_run().add_break(WD_BREAK.COLUMN)
+                pending["col"] = True
             elif isinstance(it, ColumnsEnd):
                 sec = d.add_section(WD_SECTION.CONTINUOUS)
                 geometry(sec, m)

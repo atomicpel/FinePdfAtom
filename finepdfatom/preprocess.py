@@ -38,6 +38,7 @@ class Options:
     rescale: bool = True
     clean_background: bool = True
     denoise: bool = False
+    perspective: bool = True        # выпрямлять фото листа (поиск краёв страницы)
 
 
 @dataclass
@@ -146,7 +147,6 @@ def estimate_skew(gray, limit=15.0) -> float:
         xs, ys = xs[idx], ys[idx]
     xs = xs.astype(np.float32) - small.shape[1] / 2.0
     ys = ys.astype(np.float32)
-    nbins = small.shape[0] * 2
 
     def score(a):
         r = np.deg2rad(a)
@@ -163,6 +163,66 @@ def estimate_skew(gray, limit=15.0) -> float:
         return 0.0
     # best — угол, на который надо «повернуть» точки; наклон текста — обратный
     return float(-best)
+
+
+def _order_quad(pts):
+    pts = np.asarray(pts, dtype=np.float32).reshape(4, 2)
+    s = pts.sum(axis=1)
+    d = np.diff(pts, axis=1).ravel()
+    return np.array([pts[np.argmin(s)], pts[np.argmin(d)], pts[np.argmax(s)], pts[np.argmax(d)]], np.float32)
+
+
+def find_page_quad(rgb: np.ndarray):
+    """Четырёхугольник листа на фото (в координатах изображения) или None."""
+    gray = to_gray(rgb)
+    H, W = gray.shape
+    f = min(1.0, 900.0 / max(H, W))
+    small = cv2.resize(gray, (int(W * f), int(H * f)), interpolation=cv2.INTER_AREA) if f < 1 else gray.copy()
+    sh, sw = small.shape
+    total = float(sh * sw)
+    blur = cv2.GaussianBlur(small, (5, 5), 0)
+    cands = []
+    # 1) лист светлее фона
+    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    th = cv2.morphologyEx(th, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+    cands.append(th)
+    # 2) по контурам краёв
+    edges = cv2.Canny(blur, 40, 120)
+    edges = cv2.dilate(edges, np.ones((5, 5), np.uint8))
+    cands.append(edges)
+    best = None
+    for m in cands:
+        cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in sorted(cnts, key=cv2.contourArea, reverse=True)[:5]:
+            a = cv2.contourArea(c)
+            if a < total * 0.2:
+                break
+            peri = cv2.arcLength(c, True)
+            for eps in (0.02, 0.03, 0.05):
+                ap = cv2.approxPolyDP(c, eps * peri, True)
+                if len(ap) == 4 and cv2.isContourConvex(ap):
+                    qa = cv2.contourArea(ap)
+                    if qa > total * 0.93:          # это вся картинка, а не лист
+                        break
+                    if best is None or qa > best[0]:
+                        best = (qa, ap.reshape(4, 2) / f)
+                    break
+    if best is None:
+        return None
+    q = _order_quad(best[1])
+    # лист не должен быть почти прямоугольником во весь кадр
+    return q
+
+
+def warp_page(rgb: np.ndarray, quad):
+    tl, tr, br, bl = quad
+    w = int(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl)))
+    h = int(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr)))
+    if w < 50 or h < 50:
+        return rgb
+    dst = np.array([[0, 0], [w - 1, 0], [w - 1, h - 1], [0, h - 1]], np.float32)
+    m = cv2.getPerspectiveTransform(quad.astype(np.float32), dst)
+    return cv2.warpPerspective(rgb, m, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
 
 
 def rotate_bound(img, angle, border):
@@ -191,6 +251,13 @@ def prepare(image: np.ndarray, opts: Options | None = None, osd=None) -> Prepare
             mode = MODE_PHOTO
         else:
             mode = MODE_SCAN
+
+    if opts.perspective and mode == MODE_PHOTO:
+        q = find_page_quad(rgb)
+        if q is not None:
+            rgb = warp_page(rgb, q)
+            gray = to_gray(rgb)
+            notes.append("выпрямлен лист на фото")
 
     inverted = False
     if is_dark_background(gray):

@@ -223,6 +223,8 @@ def grow_seeds(ink: np.ndarray, ch: float, seeds, exclude) -> list:
     for sx0, sy0, sx1, sy1 in seeds:
         if (sx1 - sx0) < ch * 2 or (sy1 - sy0) < ch * 2:
             continue
+        if (sx1 - sx0) * (sy1 - sy0) > 0.5 * ink.shape[0] * ink.shape[1]:
+            continue    # Tesseract иногда считает рисунком весь лист
         if any(_inter((sx0, sy0, sx1, sy1), e) > 0.5 * _area((sx0, sy0, sx1, sy1)) for e in exclude):
             continue
         x0, y0, x1, y1 = sx0, sy0, sx1, sy1
@@ -476,8 +478,25 @@ def _merge_boxes(boxes):
     return boxes
 
 
+def remove_border_noise(ink: np.ndarray) -> np.ndarray:
+    """Тени и края листа у границ кадра (сканы книг, фото) — не содержимое страницы."""
+    H, W = ink.shape
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    bad = np.zeros(n, bool)
+    for i in range(1, n):
+        x, y, w, h, a = st[i]
+        touches = x <= 2 or y <= 2 or x + w >= W - 2 or y + h >= H - 2
+        if touches and (w > W * 0.25 or h > H * 0.25 or a > ink.size * 0.002):
+            bad[i] = True
+    if bad.any():
+        ink = ink.copy()
+        ink[bad[lab]] = 0
+    return ink
+
+
 def analyze(gray: np.ndarray, ink: np.ndarray | None = None, image_seeds=()) -> PageLayout:
     ink = binarize(gray) if ink is None else ink
+    ink = remove_border_noise(ink)
     ch = char_height(ink)
     H, W = ink.shape
     tables, _all_lines = detect_tables(ink, ch)
@@ -488,6 +507,9 @@ def analyze(gray: np.ndarray, ink: np.ndarray | None = None, image_seeds=()) -> 
     for (x0, y0, x1, y1) in tboxes:
         lines[y0:y1, x0:x1] |= (horiz[y0:y1, x0:x1] | vert[y0:y1, x0:x1])
     images = _merge_boxes(detect_images(gray, ink, ch, tboxes) + grow_seeds(ink, ch, image_seeds, tboxes))
+    # «рисунок» на пол-страницы, внутри которого обычный текст, — ошибка (рамка, тень по краю листа)
+    images = [b for b in images if _area(b) < 0.4 * H * W or
+              (_area(b) < 0.75 * H * W and _few_text_like(ink[b[1]:b[3], b[0]:b[2]], ch))]
     text_mask = cv2.bitwise_and(ink, cv2.bitwise_not(lines))
     n, lab, st, _ = cv2.connectedComponentsWithStats(text_mask, connectivity=8)
     small = np.zeros(n, bool)

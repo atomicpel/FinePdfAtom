@@ -39,6 +39,7 @@ class Config:
             keep_lines=self._b("ocr/keep_lines", True),
             dehyphenate=self._b("ocr/dehyphenate", True),
             threads=int(self.get("ocr/threads", 0) or 0),
+            spellcheck=self._b("ocr/spellcheck", True),
         )
 
     def save_ocr_settings(self, st: ocr.Settings):
@@ -48,6 +49,7 @@ class Config:
         self.set("ocr/keep_lines", st.keep_lines)
         self.set("ocr/dehyphenate", st.dehyphenate)
         self.set("ocr/threads", st.threads)
+        self.set("ocr/spellcheck", st.spellcheck)
         p = st.prep
         self.set("prep/mode", p.mode)
         self.set("prep/auto_rotate", p.auto_rotate)

@@ -66,6 +66,12 @@ def main() -> int:
     except Exception as ex:  # noqa: BLE001
         good &= _ok(False, "Движок распознавания: %s" % ex)
     try:
+        from . import spell
+        av = spell.available("rus+eng+ukr")
+        _ok(bool(av), "Словари орфографии: %s" % (", ".join(av) or "нет"), "нет словарей в %s" % spell.dict_dir())
+    except Exception as ex:  # noqa: BLE001
+        _ok(False, "Орфография: %s" % ex)
+    try:
         import cv2
         import fitz
         _ok(True, "OpenCV %s, PyMuPDF %s" % (cv2.__version__, fitz.VersionBind))

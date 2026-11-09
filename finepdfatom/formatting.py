@@ -214,6 +214,20 @@ def _smooth_sizes(data, body_pt):
                 for q in run:
                     q.pt = mode
             run = [p] if p is not None else []
+    # основной текст и ячейки, близкие к основному кеглю, — ровно основной кегль
+    for p in data.paras.values():
+        if not p.heading and abs(p.pt - body_pt) <= 2:
+            p.pt = body_pt
+    # в одной таблице — единый кегль
+    tab_pts = {}
+    for bid, pids in by_block.items():
+        ps = [data.paras[q] for q in pids if q in data.paras and data.paras[q].cell]
+        if ps:
+            pts = sorted(q.pt for q in ps)
+            m = pts[len(pts) // 2]
+            for q in ps:
+                q.pt = m
+    del tab_pts
     for w in data.words:
         p = data.paras.get(w.para)
         if p is not None:

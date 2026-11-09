@@ -21,6 +21,7 @@ FORMATS = {
 
 PDF_QUALITY = {
     "color": "Цветной, высокое качество",
+    "mrc": "Цветной компактный (MRC): в 4–8 раз меньше",
     "gray": "Оттенки серого, компактный",
     "bw": "Чёрно-белый, минимальный размер",
 }
@@ -72,6 +73,43 @@ def _encode_image(rgb: np.ndarray, quality: str):
     return buf.getvalue()
 
 
+def _encode_mrc(rgb: np.ndarray):
+    """MRC: фон (без текста, уменьшен) + чернила (цвет низкого разрешения) с чёткой маской текста.
+
+    Возвращает [(stream, mask_stream|None)] — слои для вставки снизу вверх."""
+    import cv2
+    from .preprocess import normalize_background
+    H, W = rgb.shape[:2]
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    norm = normalize_background(gray)
+    mask = cv2.adaptiveThreshold(norm, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 12)
+    # фотографии и заливки оставляем в фоне: из маски убираем крупные сплошные области
+    n, lab, st, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    big = np.zeros(n, bool)
+    if n > 1:
+        dens = st[1:, 4] / np.maximum(1, st[1:, 2] * st[1:, 3])
+        big[1:] = (st[1:, 2] > W * 0.15) & (st[1:, 3] > H * 0.08) & (dens > 0.35)
+        mask[big[lab]] = 0
+    f = 2
+    bgm = cv2.dilate(mask, np.ones((5, 5), np.uint8))
+    small = cv2.resize(rgb, (max(1, W // f), max(1, H // f)), interpolation=cv2.INTER_AREA)
+    sm = cv2.resize(bgm, (small.shape[1], small.shape[0]), interpolation=cv2.INTER_NEAREST)
+    bg = cv2.inpaint(small, sm, 3, cv2.INPAINT_TELEA)
+    fg = cv2.resize(rgb, (max(1, W // 6), max(1, H // 6)), interpolation=cv2.INTER_AREA)
+    fg = cv2.erode(fg, np.ones((3, 3), np.uint8))
+
+    def jpg(a, q):
+        b = io.BytesIO()
+        if _is_grayscale(a):
+            Image.fromarray(a[:, :, 0]).save(b, "JPEG", quality=q, optimize=True)
+        else:
+            Image.fromarray(a).save(b, "JPEG", quality=q, optimize=True)
+        return b.getvalue()
+    mb = io.BytesIO()
+    Image.fromarray(mask).convert("1").save(mb, "PNG", optimize=True)
+    return [(jpg(bg, 50), None), (jpg(fg, 60), mb.getvalue())]
+
+
 def _is_grayscale(rgb) -> bool:
     s = rgb[::8, ::8].astype(np.int16)
     return int(np.abs(s[:, :, 0] - s[:, :, 1]).max()) < 12 and int(np.abs(s[:, :, 1] - s[:, :, 2]).max()) < 12
@@ -120,7 +158,11 @@ def save_pdf(pages, path, quality="color", title="", progress=None):
             h, w = r.display.shape[:2]
             k = 72.0 / dpi
             page = out.new_page(width=w * k, height=h * k)
-            page.insert_image(page.rect, stream=_encode_image(r.display, quality))
+            if quality == "mrc":
+                for stream, mask in _encode_mrc(r.display):
+                    page.insert_image(page.rect, stream=stream, mask=mask)
+            else:
+                page.insert_image(page.rect, stream=_encode_image(r.display, quality))
             page.insert_font(fontname="OCR", fontfile=_font_path())
             _add_text_layer(page, _words(p), k, "OCR", font)
         if progress:

@@ -117,6 +117,13 @@ cp -a "$PFX/lib/libtesseract.so.$TESS_VER" "$ROOT/lib/"
 strip "$ROOT/lib/libtesseract.so.$TESS_VER"
 ln -sf "libtesseract.so.$TESS_VER" "$ROOT/lib/libtesseract.so.5"
 for l in $LANGS_BEST; do cp "$SRC/tessdata_best/$l.traineddata" "$ROOT/tessdata/"; done
+log "Словари орфографии (LibreOffice: ru_RU, en_US, uk_UA)"
+if [ ! -d "$SRC/lodict" ]; then
+    git clone -q --depth 1 --filter=blob:none --sparse https://github.com/LibreOffice/dictionaries "$SRC/lodict"
+fi
+(cd "$SRC/lodict" && git sparse-checkout set --no-cone /ru_RU/ /en/ /uk_UA/)
+mkdir -p "$ROOT/dict"
+cp "$SRC/lodict/ru_RU/ru_RU."{aff,dic} "$SRC/lodict/en/en_US."{aff,dic} "$SRC/lodict/uk_UA/uk_UA."{aff,dic} "$ROOT/dict/"
 cp "$SRC/tessdata/osd.traineddata" "$ROOT/tessdata/"
 cp -r "$REPO/finepdfatom" "$ROOT/app/"
 cp "$REPO/packaging/run.py" "$ROOT/app/run.py"
@@ -125,10 +132,14 @@ cp "$REPO/LICENSE" "$ROOT/LICENSES/FinePdfAtom.txt"
 cp "$SRC/tesseract/LICENSE" "$ROOT/LICENSES/Tesseract-Apache-2.0.txt"
 cp "$SRC/leptonica/leptonica-license.txt" "$ROOT/LICENSES/Leptonica.txt" 2>/dev/null || true
 cp "$REPO/finepdfatom/resources/DejaVuSans-LICENSE.txt" "$ROOT/LICENSES/DejaVu.txt"
+cp "$SRC/lodict/ru_RU/README_ru_RU.txt" "$ROOT/LICENSES/dict-ru_RU-BSD.txt"
+cp "$SRC/lodict/en/README_en_US.txt" "$ROOT/LICENSES/dict-en_US-SCOWL.txt"
+cp "$SRC/lodict/uk_UA/README_uk_UA.txt" "$ROOT/LICENSES/dict-uk_UA-MPL.txt"
 cat > "$ROOT/LICENSES/README.txt" <<'EOF'
 Компоненты: Tesseract OCR (Apache-2.0), Leptonica (BSD-2), Python (PSF), Qt 5 / PyQt5 (GPL-3),
 OpenCV (Apache-2.0), PyMuPDF / MuPDF (AGPL-3), NumPy (BSD), Pillow (MIT-CMU), python-docx (MIT),
-odfpy (Apache-2.0/GPL), lxml (BSD), шрифт DejaVu (свободная лицензия Bitstream Vera).
+odfpy (Apache-2.0/GPL), lxml (BSD), openpyxl (MIT), spylls (MPL-2.0), словари Hunspell
+(ru_RU — BSD, en_US — SCOWL, uk_UA — MPL), шрифт DejaVu (свободная лицензия Bitstream Vera).
 Лицензии колёс Python лежат в python/lib/python3.11/site-packages/*.dist-info.
 EOF
 
@@ -172,7 +183,7 @@ FINEPDFATOM_HOME=$ROOT "$PY" -I "$ROOT/app/run.py" --version
 QT_QPA_PLATFORM=offscreen FINEPDFATOM_HOME=$ROOT HOME=$W/home "$PY" -I -c "
 import sys; sys.path.insert(0, '$ROOT/app')
 from PyQt5.QtWidgets import QApplication; from PyQt5 import QtSvg; app = QApplication([])
-import fitz, cv2, docx, odf; print('Qt OK')"
+import fitz, cv2, docx, odf, openpyxl, spylls; print('Qt OK')"
 
 # -------------------------------------------------------------------- .deb
 log "Пакет .deb"
