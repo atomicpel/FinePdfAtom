@@ -100,6 +100,16 @@ def _load():
             ctypes.POINTER(I), ctypes.POINTER(I), ctypes.POINTER(I), ctypes.POINTER(I))
         sig("TessPageIteratorIsAtBeginningOf", ctypes.c_int, P, I)
         sig("TessPageIteratorIsAtFinalElement", ctypes.c_int, P, I, I)
+        sig("TessPageIteratorBlockType", I, P)
+        sig("TessBaseAPIAnalyseLayout", P, P)
+        sig("TessPageIteratorNext", I, P, I)
+        sig("TessPageIteratorDelete", None, P)
+        sig("TessPageIteratorParagraphInfo", None, P, ctypes.POINTER(I), ctypes.POINTER(I),
+            ctypes.POINTER(I), ctypes.POINTER(I))
+        sig("TessResultIteratorWordFontAttributes", ctypes.c_char_p, P, *([ctypes.POINTER(I)] * 6),
+            ctypes.POINTER(I), ctypes.POINTER(I))
+        sig("TessResultIteratorWordIsFromDictionary", I, P)
+        sig("TessResultIteratorWordIsNumeric", I, P)
         sig("TessMonitorCreate", P)
         sig("TessMonitorDelete", None, P)
         sig("TessMonitorSetCancelFunc", None, P, _CANCEL_FUNC)
@@ -148,6 +158,16 @@ def _take_text(lib, ptr) -> str:
         lib.TessDeleteText(ptr)
 
 
+# Типы блоков Tesseract (PolyBlockType)
+PT_FLOWING_TEXT, PT_HEADING_TEXT, PT_PULLOUT_TEXT = 1, 2, 3
+PT_TABLE, PT_VERTICAL_TEXT, PT_CAPTION_TEXT = 6, 7, 8
+PT_FLOWING_IMAGE, PT_HEADING_IMAGE, PT_PULLOUT_IMAGE = 9, 10, 11
+IMAGE_TYPES = (PT_FLOWING_IMAGE, PT_HEADING_IMAGE, PT_PULLOUT_IMAGE)
+
+# Выравнивание абзаца (TessParagraphJustification)
+JUST_NAMES = {0: "", 1: "left", 2: "center", 3: "right"}
+
+
 @dataclass
 class Word:
     text: str
@@ -156,6 +176,43 @@ class Word:
     line: int
     para: int
     block: int
+    pt: float = 0.0           # кегль по высоте строки (пункты, при известном dpi)
+    bold: bool = False
+    italic: bool = False
+    in_dict: bool = True
+    cell: tuple | None = None  # (row, col) для слов в ячейке таблицы
+
+
+@dataclass
+class Block:
+    """Блок страницы: text | heading | caption | image | table."""
+    kind: str
+    box: tuple
+    ptype: int = 0
+    table: object = None       # layout.Table для kind == "table"
+    container: tuple = ()      # границы колонки/страницы
+    columns: int = 1           # колонок в полосе
+    column: int = 0
+    band: int = 0
+
+
+@dataclass
+class ParaInfo:
+    box: tuple = (0, 0, 0, 0)
+    justify: str = ""          # оценка Tesseract: left/center/right
+    indent: int = 0
+    list_item: bool = False
+    align: str = ""            # итоговое выравнивание: left/center/right/justify
+    pt: float = 0.0
+    bold: bool = False
+    italic: bool = False
+    space_before: float = 0.0  # пункты
+    heading: bool = False
+    cell: bool = False
+    nlines: int = 1
+    nchars: int = 0
+    text_end_dot: bool = False
+    left_margin: float = 0.0
 
 
 @dataclass
@@ -164,6 +221,13 @@ class OcrData:
     width: int = 0
     height: int = 0
     mean_conf: float = 0.0
+    blocks: dict = field(default_factory=dict)    # id → Block
+    order: list = field(default_factory=list)     # порядок чтения блоков (id)
+    paras: dict = field(default_factory=dict)     # id → ParaInfo
+    line_boxes: dict = field(default_factory=dict)  # id → (x0, y0, x1, y1)
+    dpi: float = 0.0           # фактическое разрешение координат (для кегля)
+    dpi_known: bool = False
+    body_pt: float = 11.0
 
     def lines(self):
         """Слова, сгруппированные по строкам: [(block, para, line, [Word])]."""
@@ -192,6 +256,7 @@ class Engine:
             self.lib.TessBaseAPIDelete(self.h)
             self.h = None
             raise TesseractError("Не удалось загрузить языки «%s» из %s" % (langs, self.datapath))
+        self.psm = psm
         self.lib.TessBaseAPISetPageSegMode(self.h, psm)
         base_vars = {"debug_file": "/dev/null"}
         base_vars.update(variables or {})
@@ -202,6 +267,7 @@ class Engine:
         self.cancel_flag = threading.Event()
 
     def set_psm(self, psm: int):
+        self.psm = psm
         self.lib.TessBaseAPISetPageSegMode(self.h, psm)
 
     def set_variable(self, name: str, value):
@@ -240,12 +306,7 @@ class Engine:
         if rect:
             x, y, rw, rh = [int(v) for v in rect]
             lib.TessBaseAPISetRectangle(self.h, x, y, rw, rh)
-        self.cancel_flag.clear()
-        if self._monitor is None:
-            self._monitor = lib.TessMonitorCreate()
-            flag = self.cancel_flag
-            self._cancel_cb = _CANCEL_FUNC(lambda _p, _w: flag.is_set())
-            lib.TessMonitorSetCancelFunc(self._monitor, self._cancel_cb)
+        self._ensure_monitor()
         rc = lib.TessBaseAPIRecognize(self.h, self._monitor)
         if self.cancel_flag.is_set():
             lib.TessBaseAPIClear(self.h)
@@ -254,30 +315,124 @@ class Engine:
             lib.TessBaseAPIClear(self.h)
             raise TesseractError("Ошибка распознавания (код %d)" % rc)
         data = OcrData(width=w, height=h, mean_conf=float(lib.TessBaseAPIMeanTextConf(self.h)))
-        it = lib.TessBaseAPIGetIterator(self.h)
-        if it:
-            pi = lib.TessResultIteratorGetPageIterator(it)
-            block = para = line = -1
-            x0, y0, x1, y1 = (ctypes.c_int() for _ in range(4))
-            while True:
-                if lib.TessPageIteratorIsAtBeginningOf(pi, RIL_BLOCK):
-                    block += 1
-                if lib.TessPageIteratorIsAtBeginningOf(pi, RIL_PARA):
-                    para += 1
-                if lib.TessPageIteratorIsAtBeginningOf(pi, RIL_TEXTLINE):
-                    line += 1
-                txt = _take_text(lib, lib.TessResultIteratorGetUTF8Text(it, RIL_WORD))
-                if txt.strip():
-                    lib.TessPageIteratorBoundingBox(pi, RIL_WORD, ctypes.byref(x0), ctypes.byref(y0),
-                                                    ctypes.byref(x1), ctypes.byref(y1))
-                    conf = float(lib.TessResultIteratorConfidence(it, RIL_WORD))
-                    data.words.append(Word(txt.strip(), conf, (x0.value, y0.value, x1.value, y1.value),
-                                           line, para, block))
-                if not lib.TessResultIteratorNext(it, RIL_WORD):
-                    break
-            lib.TessResultIteratorDelete(it)
+        self._collect(data, image_blocks=rect is None)
         lib.TessBaseAPIClear(self.h)
         return data
+
+    def _ensure_monitor(self):
+        if self._monitor is None:
+            lib = self.lib
+            self._monitor = lib.TessMonitorCreate()
+            flag = self.cancel_flag
+            self._cancel_cb = _CANCEL_FUNC(lambda _p, _w: flag.is_set())
+            lib.TessMonitorSetCancelFunc(self._monitor, self._cancel_cb)
+
+    def _box(self, pi, level):
+        x0, y0, x1, y1 = (ctypes.c_int() for _ in range(4))
+        ok = self.lib.TessPageIteratorBoundingBox(pi, level, ctypes.byref(x0), ctypes.byref(y0),
+                                                  ctypes.byref(x1), ctypes.byref(y1))
+        return (x0.value, y0.value, x1.value, y1.value) if ok else None
+
+    def _collect(self, data, image_blocks=True, base=(0, 0, 0)):
+        """Разбор результата. base — смещения счётчиков (block, para, line) при добавлении."""
+        lib = self.lib
+        I = ctypes.c_int
+        if image_blocks:
+            it = lib.TessBaseAPIGetIterator(self.h)
+            if it:
+                pi = lib.TessResultIteratorGetPageIterator(it)
+                n = 0
+                while True:
+                    bt = lib.TessPageIteratorBlockType(pi)
+                    if bt in IMAGE_TYPES:
+                        box = self._box(pi, RIL_BLOCK)
+                        if box:
+                            bid = 100000 + n
+                            data.blocks[bid] = Block("image", box, bt)
+                            data.order.append(bid)
+                            n += 1
+                    if not lib.TessResultIteratorNext(it, RIL_BLOCK):
+                        break
+                lib.TessResultIteratorDelete(it)
+        it = lib.TessBaseAPIGetIterator(self.h)
+        if not it:
+            return
+        pi = lib.TessResultIteratorGetPageIterator(it)
+        block, para, line = base[0] - 1, base[1] - 1, base[2] - 1
+        flags = [I() for _ in range(6)]
+        psize, fid = I(), I()
+        line_pt = 0.0
+        while True:
+            if lib.TessPageIteratorIsAtBeginningOf(pi, RIL_BLOCK):
+                block += 1
+                bt = lib.TessPageIteratorBlockType(pi)
+                kind = {PT_HEADING_TEXT: "heading", PT_CAPTION_TEXT: "caption"}.get(bt, "text")
+                data.blocks[block] = Block(kind, self._box(pi, RIL_BLOCK) or (0, 0, 0, 0), bt)
+                data.order.append(block)
+            if lib.TessPageIteratorIsAtBeginningOf(pi, RIL_PARA):
+                para += 1
+                j, lst, crown, ind = I(), I(), I(), I()
+                lib.TessPageIteratorParagraphInfo(pi, ctypes.byref(j), ctypes.byref(lst), ctypes.byref(crown),
+                                                  ctypes.byref(ind))
+                data.paras[para] = ParaInfo(self._box(pi, RIL_PARA) or (0, 0, 0, 0),
+                                            JUST_NAMES.get(j.value, ""), ind.value, bool(lst.value))
+            if lib.TessPageIteratorIsAtBeginningOf(pi, RIL_TEXTLINE):
+                line += 1
+                data.line_boxes[line] = self._box(pi, RIL_TEXTLINE) or (0, 0, 0, 0)
+                lib.TessResultIteratorWordFontAttributes(it, *[ctypes.byref(f) for f in flags],
+                                                         ctypes.byref(psize), ctypes.byref(fid))
+                line_pt = float(psize.value)
+            txt = _take_text(lib, lib.TessResultIteratorGetUTF8Text(it, RIL_WORD))
+            if txt.strip():
+                box = self._box(pi, RIL_WORD)
+                conf = float(lib.TessResultIteratorConfidence(it, RIL_WORD))
+                in_dict = bool(lib.TessResultIteratorWordIsFromDictionary(it) or
+                               lib.TessResultIteratorWordIsNumeric(it))
+                data.words.append(Word(txt.strip(), conf, box, line, para, block, pt=line_pt, in_dict=in_dict))
+            if not lib.TessResultIteratorNext(it, RIL_WORD):
+                break
+        lib.TessResultIteratorDelete(it)
+
+    def analyse_layout(self, gray, dpi: int = 300):
+        """Быстрый анализ разметки без распознавания: [(тип блока, box)]."""
+        lib = self.lib
+        self._set_image(gray, dpi)
+        out = []
+        pi = lib.TessBaseAPIAnalyseLayout(self.h)
+        if pi:
+            while True:
+                box = self._box(pi, RIL_BLOCK)
+                if box:
+                    out.append((lib.TessPageIteratorBlockType(pi), box))
+                if not lib.TessPageIteratorNext(pi, RIL_BLOCK):
+                    break
+            lib.TessPageIteratorDelete(pi)
+        lib.TessBaseAPIClear(self.h)
+        return out
+
+    def recognize_rects(self, gray, rects, dpi: int = 300, psm: int = PSM_SINGLE_BLOCK):
+        """Распознаёт набор прямоугольников одного изображения (ячейки таблиц).
+
+        Возвращает список OcrData (координаты — в системе всего изображения)."""
+        lib = self.lib
+        self._set_image(gray, dpi)
+        self._ensure_monitor()
+        out = []
+        try:
+            self.lib.TessBaseAPISetPageSegMode(self.h, psm)
+            for (x, y, rw, rh) in rects:
+                if self.cancel_flag.is_set():
+                    raise InterruptedError("отменено")
+                lib.TessBaseAPISetRectangle(self.h, int(x), int(y), int(rw), int(rh))
+                rc = lib.TessBaseAPIRecognize(self.h, self._monitor)
+                d = OcrData(width=rw, height=rh)
+                if rc == 0:
+                    self._collect(d, image_blocks=False)
+                out.append(d)
+        finally:
+            self.lib.TessBaseAPISetPageSegMode(self.h, self.psm)
+            lib.TessBaseAPIClear(self.h)
+        return out
 
     def cancel(self):
         self.cancel_flag.set()
