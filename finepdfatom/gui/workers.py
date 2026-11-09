@@ -58,14 +58,15 @@ class ExportWorker(QThread):
     finishedOk = pyqtSignal(str)
     failed = pyqtSignal(str)
 
-    def __init__(self, pages, path, fmt, quality, parent=None):
+    def __init__(self, pages, path, fmt, quality, parent=None, mode="formatted"):
         super().__init__(parent)
         self.pages, self.path, self.fmt, self.quality = pages, path, fmt, quality
+        self.mode = mode
 
     def run(self):
         try:
             export.save(self.pages, self.path, self.fmt, self.quality,
-                        progress=lambda a, b: self.progress.emit(a, b))
+                        progress=lambda a, b: self.progress.emit(a, b), mode=self.mode)
             self.finishedOk.emit(self.path)
         except Exception as e:  # noqa: BLE001
             self.failed.emit(str(e))

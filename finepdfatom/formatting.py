@@ -101,7 +101,8 @@ def analyze(data, ink: np.ndarray, regions_meta: dict, dpi: float, dpi_known: bo
         elif len(ws) >= 3 and nb / len(ws) <= 0.25:
             # оставляем только явно жирные слова
             for w in ws:
-                w.bold = w.bold and w._sr > base * 1.45 if len(ratios) >= 8 else False
+                strong = len(ratios) >= 8 and w._sr > base * 1.45
+                w.bold = w.bold and strong and sum(c.isalnum() for c in w.text) >= 3
 
     # --- курсив по строкам (дорого — считаем на строке целиком)
     for lid, ws in by_line.items():
@@ -170,6 +171,7 @@ def analyze(data, ink: np.ndarray, regions_meta: dict, dpi: float, dpi_known: bo
             new_words += ws
     data.words = new_words
     data.body_pt = body_pt
+    _smooth_sizes(data, body_pt)
     # заголовки и интервалы
     prev_box = None
     for p in data.paras.values():
@@ -181,6 +183,41 @@ def analyze(data, ink: np.ndarray, regions_meta: dict, dpi: float, dpi_known: bo
             p.space_before = max(0.0, gap / dpi * 72.0 * (k if dpi_known else 1.0)) if dpi > 0 else 0.0
         if not p.cell:
             prev_box = p.box
+
+
+def _smooth_sizes(data, body_pt):
+    """Выравнивает «дрожащий» кегль соседних абзацев одного блока и кегль ячеек таблиц."""
+    by_block = {}
+    for w in data.words:
+        lst = by_block.setdefault(w.block, [])
+        if not lst or lst[-1] != w.para:
+            lst.append(w.para)
+    for bid, pids in by_block.items():
+        ps = [data.paras[p] for p in pids if p in data.paras]
+        if not ps:
+            continue
+        if ps[0].cell:
+            for p in ps:
+                if not (body_pt * 0.75 <= p.pt <= body_pt * 1.4):
+                    p.pt = body_pt
+            continue
+        run = []
+        for p in ps + [None]:
+            if p is not None and run and abs(p.pt - run[-1].pt) <= 2.5 and not p.heading and not run[-1].heading:
+                run.append(p)
+                continue
+            if len(run) > 1:
+                weights = {}
+                for q in run:
+                    weights[q.pt] = weights.get(q.pt, 0) + q.nchars
+                mode = max(weights, key=weights.get)
+                for q in run:
+                    q.pt = mode
+            run = [p] if p is not None else []
+    for w in data.words:
+        p = data.paras.get(w.para)
+        if p is not None:
+            w.pt = p.pt
 
 
 def _weighted_median(pairs):

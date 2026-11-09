@@ -205,6 +205,12 @@ class MainWindow(QMainWindow):
         sm = QMenu(self)
         for fmt, title in export.FORMATS.items():
             sm.addAction(title.split(" (")[0], lambda f=fmt: self.save_as(f))
+        sm.addSeparator()
+        self.act_keep_format = sm.addAction("Сохранять оформление (колонки, шрифты, таблицы, рисунки)")
+        self.act_keep_format.setCheckable(True)
+        self.act_keep_format.setChecked(self.config.get("export/mode", "formatted") == "formatted")
+        self.act_keep_format.toggled.connect(
+            lambda on: self.config.set("export/mode", "formatted" if on else "plain"))
         self.btn_save.setMenu(sm)
         self.btn_save.setPopupMode(QToolButton.InstantPopup)
         QShortcut(QKeySequence("Ctrl+S"), self, activated=lambda: self.save_as("pdf"))
@@ -311,6 +317,11 @@ class MainWindow(QMainWindow):
         self.btn_boxes.setChecked(True)
         self.btn_boxes.toggled.connect(self._toggle_boxes)
         vh.addWidget(self.btn_boxes)
+        self.btn_zones = self._small("area", "Показывать зоны: текст, таблицы, рисунки и порядок чтения",
+                                     lambda on: None, checkable=True)
+        self.btn_zones.setChecked(self.config._b("ui/show_zones", True))
+        self.btn_zones.toggled.connect(self._toggle_zones)
+        vh.addWidget(self.btn_zones)
         self.info_lbl = QLabel("")
         self.info_lbl.setObjectName("Muted")
         vh.addWidget(self.info_lbl, 1)
@@ -623,6 +634,7 @@ class MainWindow(QMainWindow):
         try:
             if proc:
                 self.view.set_image(p.result.display, p.result.data.words)
+                self.view.set_zones(p.result.data, self.btn_zones.isChecked())
                 h, w = p.result.display.shape[:2]
             else:
                 img = self._original(p)
@@ -674,6 +686,10 @@ class MainWindow(QMainWindow):
         if p.text is not None:
             notes += ("  ·  " if notes else "") + "текст изменён вручную"
         self.notes_lbl.setText(notes)
+
+    def _toggle_zones(self, on):
+        self.config.set("ui/show_zones", on)
+        self.view.set_zones_visible(on)
 
     def _toggle_boxes(self, on):
         self.view.set_boxes_visible(on)
@@ -953,10 +969,6 @@ class MainWindow(QMainWindow):
                                      "Не распознано страниц: %d. Сохранить только распознанные?" % skipped)
             if r != QMessageBox.Yes:
                 return
-        if fmt == "pdf" and any(p.text is not None for p in pages):
-            QMessageBox.information(self, "Сохранение",
-                                    "В PDF текстовый слой строится по распознанным словам на изображении — "
-                                    "ручные правки текста попадут в TXT, DOCX и ODT.")
         base = self.pages[0].ref.path or os.path.join(os.path.expanduser("~"), "Документ")
         default = os.path.join(self.config.get("ui/save_dir", os.path.dirname(base)),
                                os.path.splitext(os.path.basename(base))[0] + ("_ocr" if fmt == "pdf" else "") + "." + fmt)
@@ -968,7 +980,8 @@ class MainWindow(QMainWindow):
         self.config.set("ui/save_dir", os.path.dirname(path))
         items = [export.ExportPage(p.result, p.final_text(), p.ref if p.ref.kind == "pdf" and not p.region else None)
                  for p in pages]
-        self._export = ExportWorker(items, path, fmt, self.config.pdf_quality, self)
+        self._export = ExportWorker(items, path, fmt, self.config.pdf_quality, self,
+                                    mode=self.config.get("export/mode", "formatted"))
         self._export.progress.connect(lambda a, b: (self.progress.setRange(0, b), self.progress.setValue(a)))
         self._export.finishedOk.connect(self._saved)
         self._export.failed.connect(lambda e: (self.progress.hide(),

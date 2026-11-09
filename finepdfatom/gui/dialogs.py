@@ -278,6 +278,7 @@ class BatchWorker(QThread):
     def __init__(self, settings, files, outdir, fmts, quality, parent=None):
         super().__init__(parent)
         self.settings, self.files, self.outdir, self.fmts, self.quality = settings, files, outdir, fmts, quality
+        self.mode = "formatted"
         self.rec = None
         self._stop = False
 
@@ -302,7 +303,7 @@ class BatchWorker(QThread):
                         out = base + "." + fm
                         if os.path.abspath(out) == os.path.abspath(f):
                             out = base + ".ocr." + fm
-                        export.save(pages, out, fm, self.quality)
+                        export.save(pages, out, fm, self.quality, mode=self.mode)
                     conf = sum(p.result.mean_conf for p in pages) / max(1, len(pages))
                     self.log.emit("✔ %s — страниц %d, уверенность %.0f%%%s" % (
                         os.path.basename(f), len(pages), conf, (", ошибок %d" % len(errs)) if errs else ""))
@@ -339,7 +340,7 @@ class BatchDialog(QDialog):
         fm_row = QHBoxLayout()
         self.fmt_boxes = {}
         saved = (config.get("batch/formats", "pdf") or "pdf").split(",")
-        for k in ("pdf", "docx", "odt", "txt"):
+        for k in ("pdf", "docx", "odt", "xlsx", "html", "txt"):
             cb = QCheckBox(k.upper())
             cb.setChecked(k in saved)
             self.fmt_boxes[k] = cb
@@ -393,6 +394,7 @@ class BatchDialog(QDialog):
         self.config.set("batch/formats", ",".join(fmts))
         self.logw.appendPlainText("Файлов: %d" % len(files))
         self.w = BatchWorker(self.config.ocr_settings(), files, dst, fmts, self.config.pdf_quality, self)
+        self.w.mode = self.config.get("export/mode", "formatted")
         self.w.log.connect(self.logw.appendPlainText)
         self.w.progress.connect(lambda a, b: (self.bar.setMaximum(b), self.bar.setValue(a)))
         self.w.done.connect(self._done)

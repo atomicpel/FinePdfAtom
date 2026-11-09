@@ -1,4 +1,4 @@
-"""Экспорт результатов: TXT, PDF с текстовым слоем, DOCX, ODT."""
+"""Экспорт результатов: PDF с текстовым слоем, DOCX, ODT, XLSX, HTML, TXT."""
 from __future__ import annotations
 
 import io
@@ -12,9 +12,11 @@ from . import paths
 
 FORMATS = {
     "pdf": "PDF с поиском по тексту (*.pdf)",
-    "txt": "Текст (*.txt)",
     "docx": "Документ Word (*.docx)",
-    "odt": "Документ LibreOffice (*.odt)",
+    "odt": "Документ LibreOffice Writer (*.odt)",
+    "xlsx": "Таблица Excel (*.xlsx)",
+    "html": "Веб-страница (*.html)",
+    "txt": "Текст (*.txt)",
 }
 
 PDF_QUALITY = {
@@ -29,6 +31,11 @@ class ExportPage:
     result: object            # ocr.PageResult
     text: str                 # итоговый (возможно, отредактированный) текст
     ref: object = None        # sources.PageRef — для PDF-источников
+
+
+def _words(p):
+    from . import docmodel
+    return docmodel.page_data(p.result, p.text).words
 
 
 def _font_path():
@@ -106,7 +113,7 @@ def save_pdf(pages, path, quality="color", title="", progress=None):
                 k = 72.0 / r.dpi
                 page.insert_font(fontname="OCR", fontfile=_font_path())
                 # координаты отрисовки → систему страницы с учётом поворота /Rotate
-                words = _unrotate_words(r.data.words, page, k)
+                words = _unrotate_words(_words(p), page, k)
                 _add_text_layer(page, words, 1.0, "OCR", font)
         else:
             dpi = r.dpi or 300
@@ -115,7 +122,7 @@ def save_pdf(pages, path, quality="color", title="", progress=None):
             page = out.new_page(width=w * k, height=h * k)
             page.insert_image(page.rect, stream=_encode_image(r.display, quality))
             page.insert_font(fontname="OCR", fontfile=_font_path())
-            _add_text_layer(page, r.data.words, k, "OCR", font)
+            _add_text_layer(page, _words(p), k, "OCR", font)
         if progress:
             progress(i + 1, len(pages))
     out.set_metadata({"title": title or os.path.splitext(os.path.basename(path))[0],
@@ -145,68 +152,46 @@ def _unrotate_words(words, page, k):
     return out
 
 
-# --- DOCX -------------------------------------------------------------------
+# --- DOCX / ODT / HTML / XLSX ------------------------------------------------
 
-def save_docx(pages, path):
-    import docx
-    from docx.enum.text import WD_BREAK
-    from docx.shared import Pt
-    d = docx.Document()
-    st = d.styles["Normal"]
-    st.font.name = "Times New Roman"
-    st.font.size = Pt(12)
-    for i, p in enumerate(pages):
-        paras = [x for x in p.text.split("\n\n")] if p.text.strip() else [""]
-        for j, para in enumerate(paras):
-            par = d.add_paragraph()
-            lines = para.split("\n")
-            for li, ln in enumerate(lines):
-                run = par.add_run(ln)
-                if li < len(lines) - 1:
-                    run.add_break()
-        if i < len(pages) - 1:
-            d.paragraphs[-1].add_run().add_break(WD_BREAK.PAGE)
-    d.core_properties.author = "FinePdfAtom"
-    d.save(path)
+def _models(pages, mode="formatted", dehyphenate=True):
+    from . import docmodel
+    return [docmodel.build(p.result, p.text, plain=(mode == "plain"), dehyphenate=dehyphenate) for p in pages]
 
 
-# --- ODT --------------------------------------------------------------------
-
-def save_odt(pages, path):
-    from odf.opendocument import OpenDocumentText
-    from odf.style import ParagraphProperties, Style, TextProperties
-    from odf.text import LineBreak, P
-    doc = OpenDocumentText()
-    normal = Style(name="Текст", family="paragraph")
-    normal.addElement(TextProperties(fontname="Times New Roman", fontsize="12pt"))
-    normal.addElement(ParagraphProperties(marginbottom="0.2cm"))
-    doc.styles.addElement(normal)
-    brk = Style(name="РазрывСтраницы", family="paragraph", parentstylename=normal)
-    brk.addElement(ParagraphProperties(breakbefore="page"))
-    doc.automaticstyles.addElement(brk)
-    for i, p in enumerate(pages):
-        paras = p.text.split("\n\n") if p.text.strip() else [""]
-        for j, para in enumerate(paras):
-            style = brk if (i > 0 and j == 0) else normal
-            el = P(stylename=style)
-            lines = para.split("\n")
-            for li, ln in enumerate(lines):
-                el.addText(ln)
-                if li < len(lines) - 1:
-                    el.addElement(LineBreak())
-            doc.text.addElement(el)
-    doc.save(path)
+def save_docx(pages, path, mode="formatted"):
+    from . import richexport
+    richexport.save_docx(_models(pages, mode), path, os.path.splitext(os.path.basename(path))[0])
 
 
-def save(pages, path, fmt=None, pdf_quality="color", progress=None):
+def save_odt(pages, path, mode="formatted"):
+    from . import richexport
+    richexport.save_odt(_models(pages, mode), path, os.path.splitext(os.path.basename(path))[0])
+
+
+def save_html(pages, path, mode="formatted"):
+    from . import richexport
+    richexport.save_html(_models(pages, mode), path, os.path.splitext(os.path.basename(path))[0])
+
+
+def save_xlsx(pages, path, mode="formatted"):
+    from . import richexport
+    richexport.save_xlsx(_models(pages, mode), path)
+
+
+def save(pages, path, fmt=None, pdf_quality="color", progress=None, mode="formatted"):
     fmt = (fmt or os.path.splitext(path)[1].lstrip(".")).lower()
     if fmt == "pdf":
         save_pdf(pages, path, pdf_quality, progress=progress)
     elif fmt == "txt":
         save_txt(pages, path)
     elif fmt == "docx":
-        save_docx(pages, path)
+        save_docx(pages, path, mode)
     elif fmt == "odt":
-        save_odt(pages, path)
+        save_odt(pages, path, mode)
+    elif fmt in ("html", "htm"):
+        save_html(pages, path, mode)
+    elif fmt == "xlsx":
+        save_xlsx(pages, path, mode)
     else:
         raise ValueError("Неизвестный формат: %s" % fmt)

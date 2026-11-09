@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from . import formatting, layout, postfix, preprocess, tess, textlayout
+from . import formatting, layout, postfix, preprocess, spell, tess, textlayout
 
 PSM_CHOICES = {
     "auto": (tess.PSM_AUTO, "Авто: колонки, таблицы, рисунки, оформление"),
@@ -34,6 +34,7 @@ class Settings:
     keep_lines: bool = True          # сохранять разрывы строк (False — склеивать строки в абзацы)
     dehyphenate: bool = True         # склеивать переносы
     threads: int = 0                 # 0 — авто
+    spellcheck: bool = True          # проверка орфографии и исправление явных ошибок распознавания
 
     def worker_count(self) -> int:
         if self.threads > 0:
@@ -217,6 +218,8 @@ class Recognizer:
                 cont = _page_container(data)
                 postfix.fix_scripts(data, s.langs)
                 postfix.fix_bullets_and_noise(data)
+                if s.spellcheck:
+                    spell.check_words(data, s.langs)
                 formatting.analyze(data, ink, {k: cont for k in meta}, dpi_eff, dpi_known,
                                    layout.char_height(ink))
         except InterruptedError:
@@ -240,7 +243,7 @@ class Recognizer:
             return None
         H, W = gray.shape
         data = tess.OcrData(width=W, height=H)
-        pad = max(2, int(lay.ch * 0.35))
+        pad = max(3, int(lay.ch * 0.6))
 
         def clip_rect(b, p):
             x0, y0 = max(0, int(b[0]) - p), max(0, int(b[1]) - p)
@@ -302,6 +305,8 @@ class Recognizer:
         meta = {i: tuple(r.container) for i, r in enumerate(lay.regions)}
         postfix.fix_scripts(data, self.settings.langs)
         postfix.fix_bullets_and_noise(data)
+        if self.settings.spellcheck:
+            spell.check_words(data, self.settings.langs)
         formatting.analyze(data, ink_nolines, meta, dpi_eff, dpi_known, lay.ch)
         return data
 

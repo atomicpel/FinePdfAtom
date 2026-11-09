@@ -71,6 +71,7 @@ class ImageView(QGraphicsView):
     def clear_all(self):
         self.scene().clear()
         self.pix = None
+        self.zones = []
         self.boxes = []
         self.region_item = None
 
@@ -94,6 +95,57 @@ class ImageView(QGraphicsView):
             self.setTransform(tr)
         else:
             self.fit()
+
+    def set_zones(self, data, visible=True):
+        """Зоны страницы: текст — синие, таблицы — зелёные, рисунки — красные; цифра — порядок чтения."""
+        from PyQt5.QtGui import QFont
+        from PyQt5.QtWidgets import QGraphicsSimpleTextItem
+        self.zones = []
+        if data is None or not getattr(data, "order", None):
+            return
+        colors = {"text": QColor("#3a6df0"), "heading": QColor("#3a6df0"), "caption": QColor("#3a6df0"),
+                  "table": QColor("#1f9d61"), "image": QColor("#e5484d")}
+        n = 0
+        for bid in data.order:
+            b = data.blocks.get(bid)
+            if b is None:
+                continue
+            if b.kind not in ("table", "image") and not any(w.block == bid for w in data.words):
+                continue
+            n += 1
+            c = colors.get(b.kind, QColor("#3a6df0"))
+            x0, y0, x1, y1 = b.box
+            pen = QPen(c, 0)
+            pen.setCosmetic(True)
+            pen.setWidthF(2.0)
+            fill = QColor(c)
+            fill.setAlpha(14)
+            r = self.scene().addRect(QRectF(x0, y0, x1 - x0, y1 - y0), pen, QBrush(fill))
+            r.setZValue(1)
+            r.setToolTip({"table": "Таблица", "image": "Рисунок"}.get(b.kind, "Текст") + " — зона %d" % n)
+            label = QGraphicsSimpleTextItem(str(n))
+            f = QFont()
+            f.setBold(True)
+            f.setPixelSize(max(14, int((y1 - y0) * 0.0 + self.pix.pixmap().height() / 70)) if self.pix else 14)
+            label.setFont(f)
+            label.setBrush(QBrush(c))
+            label.setPos(x0 - label.boundingRect().width() - 4, y0)
+            label.setZValue(4)
+            self.scene().addItem(label)
+            if b.kind == "table" and b.table is not None:
+                cpen = QPen(c, 0, Qt.DotLine)
+                cpen.setCosmetic(True)
+                for cell in b.table.cells:
+                    cx0, cy0, cx1, cy1 = cell.box
+                    ci = self.scene().addRect(QRectF(cx0, cy0, cx1 - cx0, cy1 - cy0), cpen)
+                    ci.setZValue(1)
+                    self.zones.append(ci)
+            self.zones += [r, label]
+        self.set_zones_visible(visible)
+
+    def set_zones_visible(self, v):
+        for z in getattr(self, "zones", []):
+            z.setVisible(v)
 
     def set_boxes_visible(self, v):
         self.show_boxes = v
