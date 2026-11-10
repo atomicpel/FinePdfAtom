@@ -26,6 +26,9 @@ class Run:
     text: str
     bold: bool = False
     italic: bool = False
+    href: str = ""                # гиперссылка
+    sup: bool = False             # надстрочный знак
+    note: object = None           # сноска: список Para (текст сноски), знак сноски ставится на месте фрагмента
 
 
 @dataclass
@@ -38,6 +41,9 @@ class Para:
     left: float = 0.0             # отступ слева, пт
     space_before: float = 0.0
     list_item: bool = False
+    fbox: tuple = ()              # положение на странице в долях (x0, y0, x1, y1)
+    nlines: int = 1
+    role: str = ""                # header | footer | pagenum | footnote
 
     @property
     def text(self):
@@ -61,6 +67,8 @@ class TableItem:
     col_widths: list              # пункты
     row_heights: list             # пункты
     cells: list                   # [CellItem]
+    fbox: tuple = ()
+    ruled: bool = True            # False — таблица без линий
 
 
 @dataclass
@@ -70,6 +78,7 @@ class ImageItem:
     width: float                  # пункты
     height: float
     align: str = "center"
+    fbox: tuple = ()
 
 
 @dataclass
@@ -94,6 +103,8 @@ class PageModel:
     margins: tuple = (56.7, 56.7, 56.7, 56.7)   # слева, сверху, справа, снизу
     body_pt: float = 11.0
     tables: list = field(default_factory=list)
+    soft_start: bool = False      # страница продолжает абзац предыдущей — без разрыва страницы
+    index: int = 0
 
 
 _NUM_RE = re.compile(r"^[-+−]?\d{1,3}(?:[  ]\d{3})*(?:[.,]\d+)?%?$|^[-+−]?\d+(?:[.,]\d+)?%?$")
@@ -247,11 +258,13 @@ def build(result, edited_text=None, plain=False, dehyphenate=True) -> PageModel:
         if blk.kind == "image":
             img = _image_item(result.display, blk.box, k, usable)
             if img:
+                img.fbox = _fb(blk.box, W, H)
                 model.items.append(img)
             continue
         ws = by_block.get(bid, [])
         if blk.kind == "table" and blk.table is not None:
             t = _table_item(blk, ws, data, k)
+            t.fbox = _fb(blk.box, W, H)
             model.items.append(t)
             model.tables.append(t)
             continue
@@ -260,6 +273,10 @@ def build(result, edited_text=None, plain=False, dehyphenate=True) -> PageModel:
     if cur_cols > 1:
         model.items.append(ColumnsEnd())
     return model
+
+
+def _fb(box, W, H):
+    return (box[0] / float(W), box[1] / float(H), box[2] / float(W), box[3] / float(H))
 
 
 def _group(ws, key):
@@ -276,6 +293,11 @@ def _group(ws, key):
 def _para(data, pid, ws, k, body_pt, dehyphenate, container=None):
     info = data.paras.get(pid)
     p = Para(_runs(ws, dehyphenate), body_pt)
+    if ws and data.width and data.height:
+        W, H = float(data.width), float(data.height)
+        p.fbox = (min(w.box[0] for w in ws) / W, min(w.box[1] for w in ws) / H,
+                  max(w.box[2] for w in ws) / W, max(w.box[3] for w in ws) / H)
+        p.nlines = len({w.line for w in ws})
     if info is not None:
         p.pt = info.pt or body_pt
         p.align = info.align or "left"
@@ -354,4 +376,4 @@ def _table_item(blk, ws, data, k, plain=False):
             elif rg < lg * 0.5 and lg > width * 0.25:
                 align = "right"
         cells.append(CellItem(c.row, c.col, c.rowspan, c.colspan, paras, align))
-    return TableItem(t.rows, t.cols, cw, rh, cells)
+    return TableItem(t.rows, t.cols, cw, rh, cells, ruled=getattr(t, "ruled", True))

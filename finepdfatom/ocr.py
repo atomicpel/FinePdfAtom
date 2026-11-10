@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from . import formatting, layout, postfix, preprocess, spell, tess, textlayout
+from . import formatting, layout, postfix, preprocess, spell, superscript, tess, textlayout
 
 PSM_CHOICES = {
     "auto": (tess.PSM_AUTO, "Авто: колонки, таблицы, рисунки, оформление"),
@@ -303,6 +303,13 @@ class Recognizer:
         if data.words:
             data.mean_conf = sum(w.conf for w in data.words) / len(data.words)
         meta = {i: tuple(r.container) for i, r in enumerate(lay.regions)}
+        try:
+            superscript.detect(data, ink_nolines, gray, eng, dpi_eff, lay.ch)
+        except InterruptedError:
+            raise
+        except Exception:  # noqa: BLE001 — знаки сносок не должны ронять распознавание страницы
+            pass
+        data.words.sort(key=lambda w: (order_idx[w.block], w.cell or (0, 0), w.line, w.box[0]))
         postfix.fix_scripts(data, self.settings.langs)
         postfix.fix_bullets_and_noise(data)
         if self.settings.spellcheck:

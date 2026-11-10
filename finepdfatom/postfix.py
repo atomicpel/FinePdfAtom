@@ -41,17 +41,56 @@ def fix_word(text: str, ctx_cyr: bool) -> str:
     return text
 
 
+# частые короткие русские слова, которые целиком читаются латиницей («Ha», «He», «TO», «o6»)
+_SHORT_RU = {"на", "не", "но", "он", "от", "то", "та", "те", "ко", "ее", "её", "мы", "вы", "ты", "нас",
+             "вас", "нет", "кто", "там", "тем", "тот", "око", "раз", "пар", "сто", "ум", "уж", "же",
+             "см", "ст", "тот", "как", "так", "ток", "тут", "тема", "сам", "нам", "вам", "ему", "мне",
+             "хор", "рот", "кот", "сор", "вес", "все", "всё", "час", "мера", "мост", "место", "текст"}
+
+
+def _fix_short(text: str, cyr: int, lat: int) -> str:
+    core = "".join(c for c in text if c.isalpha())
+    if not core:
+        return text
+    # латинское слово из букв-двойников среди русского текста
+    if cyr > lat * 2 and cyr > 0 and len(core) <= 5 and all(_is_lat(c) and c in LAT2CYR for c in core):
+        conv = "".join(LAT2CYR[c] for c in core)
+        if conv.lower() in _SHORT_RU:
+            if core[0].isupper() and len(core) > 1 and core[1:].islower() or core.islower():
+                conv = conv[0] + conv[1:].lower()
+            elif core.isupper() and len(core) <= 2:
+                conv = conv[0] + conv[1:].lower()
+            return text.replace(core, conv)
+    # одиночная кириллическая буква среди английского текста («to а grounded»)
+    if lat > cyr * 2 and lat > 0 and len(core) == 1 and _is_cyr(core) and core in CYR2LAT:
+        return text.replace(core, CYR2LAT[core])
+    return text
+
+
 def fix_scripts(data, langs: str):
     if "rus" not in langs and "ukr" not in langs and "bel" not in langs:
         return
     words = data.words
+    para_cyr, para_lat = {}, {}
+    for w in words:
+        para_cyr[w.para] = para_cyr.get(w.para, 0) + sum(_is_cyr(c) for c in w.text)
+        if "@" not in w.text and "/" not in w.text and "." not in w.text[:-1]:
+            para_lat[w.para] = para_lat.get(w.para, 0) + sum(_is_lat(c) for c in w.text)
     for i, w in enumerate(words):
         # контекст: соседи в той же строке/абзаце
         nb = [words[j] for j in (i - 2, i - 1, i + 1, i + 2) if 0 <= j < len(words) and words[j].para == w.para]
         cyr = sum(sum(_is_cyr(c) for c in x.text) for x in nb)
         lat = sum(sum(_is_lat(c) for c in x.text) for x in nb)
         new = fix_word(w.text, cyr > lat * 2 and cyr > 0)
+        if new == w.text:
+            new = _fix_short(w.text, cyr, lat)
+        if new == w.text and para_cyr.get(w.para, 0) > 3 * para_lat.get(w.para, 0):
+            new = _fix_short(w.text, 3, 1)
         if new != w.text:
+            # «направляйте Ha адрес» → «на»: заглавная посреди предложения — ошибка распознавания
+            if len(new) <= 3 and new[:1].isupper() and i > 0 and words[i - 1].para == w.para and \
+                    words[i - 1].text[-1:] not in ".!?:" and words[i - 1].text[-1:].isalpha():
+                new = new[0].lower() + new[1:]
             w.text = new
 
 

@@ -33,6 +33,7 @@ class Table:
     cells: list = field(default_factory=list)
     col_edges: list = field(default_factory=list)   # x-границы столбцов (len = cols + 1)
     row_edges: list = field(default_factory=list)   # y-границы строк (len = rows + 1)
+    ruled: bool = True                              # False — таблица без линий
 
 
 @dataclass
@@ -560,6 +561,7 @@ def analyze(gray: np.ndarray, ink: np.ndarray | None = None, image_seeds=()) -> 
     for kind, ob, tab in objects:
         if id(ob) not in used:
             regions.append(Region(kind, tuple(int(v) for v in ob), ob, tab))
+    regions = _borderless_tables(regions, pure_text, ch, objects)
     _fix_containers(regions)
 
     text_image = gray.copy()
@@ -574,6 +576,119 @@ def analyze(gray: np.ndarray, ink: np.ndarray | None = None, image_seeds=()) -> 
     lay.lines = lines
     lay.text_mask = text_mask
     return lay
+
+
+# ------------------------------------------------------------- таблицы без линий
+
+def _grid_table(mask: np.ndarray, box, ch: float):
+    """Таблица без линовки в области box: строки — по строкам текста, столбцы — по общим просветам."""
+    x0, y0, x1, y1 = [int(v) for v in box]
+    sub = mask[y0:y1, x0:x1] > 0
+    if sub.size == 0:
+        return None
+    rows = [(a, b) for a, b in _runs(sub.max(axis=1)) if b - a >= ch * 0.4]
+    if len(rows) < 2:
+        return None
+    # строки должны быть одиночными (без переносов внутри ячеек)
+    if any((b - a) > ch * 2.4 for a, b in rows):
+        return None
+    union = sub.max(axis=0)
+    gut = _gaps(union.astype(np.uint8), ch * 1.5)
+    if not gut:
+        return None
+    col_ranges = []
+    prev = 0
+    for s, e in gut:
+        col_ranges.append((prev, s))
+        prev = e
+    col_ranges.append((prev, x1 - x0))
+    ncols, nrows = len(col_ranges), len(rows)
+    if nrows * ncols < 6:
+        return None
+    filled = np.zeros((nrows, ncols), bool)
+    fills = [[] for _ in range(ncols)]
+    for r, (ra, rb) in enumerate(rows):
+        prof = sub[ra:rb].max(axis=0)
+        for c, (ca, cb) in enumerate(col_ranges):
+            xs = np.flatnonzero(prof[ca:cb])
+            if xs.size:
+                filled[r, c] = True
+                fills[c].append((xs[-1] - xs[0] + 1) / float(max(1, cb - ca)))
+    if filled.mean() < 0.6:
+        return None
+    per_row = filled.sum(axis=1)
+    if np.mean(per_row >= 2) < 0.7 or per_row[0] < 2 or per_row[-1] < 2:
+        return None
+    med = [float(np.median(f)) if f else 0.0 for f in fills]
+    # у колонок обычного текста строки заполняют почти всю ширину колонки
+    if all(m > 0.85 for m in med):
+        return None
+    # в строке таблицы ячейки короткие: длинная строка на всю ширину — это текст
+    xe = [x0 - 2] + [x0 + (s + e) // 2 for s, e in gut] + [x1 + 2]
+    ye = [y0 - 2] + [y0 + (rows[i][1] + rows[i + 1][0]) // 2 for i in range(nrows - 1)] + [y1 + 2]
+    cells = []
+    for r in range(nrows):
+        for c in range(ncols):
+            cells.append(Cell(r, c, 1, 1, (xe[c], ye[r], xe[c + 1], ye[r + 1])))
+    return Table((x0, y0, x1, y1), nrows, ncols, cells, xe, ye, ruled=False)
+
+
+def _borderless_tables(regions, mask, ch, objects):
+    out = []
+    i = 0
+    n = len(regions)
+
+    def single(r):
+        return r.kind == "text" and (r.box[3] - r.box[1]) < ch * 2.4
+
+    while i < n:
+        r = regions[i]
+        # 1) подряд идущие одиночные строки (строки таблицы с большим интервалом)
+        if single(r) and r.columns == 1:
+            j = i
+            while j + 1 < n and single(regions[j + 1]) and regions[j + 1].columns == 1 and \
+                    0 <= regions[j + 1].box[1] - regions[j].box[3] < ch * 3.5:
+                j += 1
+            best = None
+            if j - i + 1 >= 2:
+                for a in range(i, j):
+                    for b in range(j, a, -1):
+                        if b - a + 1 < 2 or (best and b - a <= best[1] - best[0]):
+                            continue
+                        rs = regions[a:b + 1]
+                        box = (min(q.box[0] for q in rs), rs[0].box[1], max(q.box[2] for q in rs), rs[-1].box[3])
+                        t = _grid_table(mask, box, ch)
+                        if t is not None and t.rows == len(rs):
+                            best = (a, b, t)
+            if best:
+                a, b, t = best
+                out.extend(regions[i:a])
+                out.append(Region("table", t.box, regions[a].container, t, 1, 0, regions[a].band))
+                objects.append(("table", t.box, t))
+                i = b + 1
+                continue
+            out.append(r)
+            i += 1
+            continue
+        # 2) «колонки», которые на самом деле таблица (строки стоят вплотную)
+        if r.kind == "text" and r.columns > 1:
+            j = i
+            while j + 1 < n and regions[j + 1].band == r.band and regions[j + 1].kind == "text":
+                j += 1
+            rs = regions[i:j + 1]
+            box = (min(q.box[0] for q in rs), min(q.box[1] for q in rs),
+                   max(q.box[2] for q in rs), max(q.box[3] for q in rs))
+            t = _grid_table(mask, box, ch)
+            if t is not None and t.cols >= r.columns:
+                out.append(Region("table", t.box, box, t, 1, 0, r.band))
+                objects.append(("table", t.box, t))
+            else:
+                out.extend(rs)
+            i = j + 1
+            continue
+        out.append(r)
+        i += 1
+    return out
 
 
 def _ink_box(mask, box):

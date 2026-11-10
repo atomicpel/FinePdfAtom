@@ -208,6 +208,7 @@ class ParaInfo:
     italic: bool = False
     space_before: float = 0.0  # пункты
     heading: bool = False
+    numbered: bool = False
     cell: bool = False
     nlines: int = 1
     nchars: int = 0

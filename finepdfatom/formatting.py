@@ -175,9 +175,13 @@ def analyze(data, ink: np.ndarray, regions_meta: dict, dpi: float, dpi_known: bo
     # заголовки и интервалы
     prev_box = None
     for p in data.paras.values():
-        p.heading = (not p.cell) and not p.list_item and (
-            (p.pt >= max(body_pt + 2, body_pt * 1.25) and p.nlines <= 3 and p.nchars <= 160) or
+        # «1. Общие сведения» жирным — заголовок; пункты списка с маркером — нет
+        bullet = p.list_item and not p.numbered
+        p.heading = (not p.cell) and not bullet and (
+            (not p.list_item and p.pt >= max(body_pt + 2, body_pt * 1.25) and p.nlines <= 3 and p.nchars <= 160) or
             (p.bold and p.nlines <= 2 and p.nchars < 140 and not p.text_end_dot))
+        if p.heading:
+            p.list_item = False
         if prev_box is not None and not p.cell:
             gap = p.box[1] - prev_box[3]
             p.space_before = max(0.0, gap / dpi * 72.0 * (k if dpi_known else 1.0)) if dpi > 0 else 0.0
@@ -328,6 +332,7 @@ def _para_info(ws, data, container, body_pt, lines=None, cell=False, ch=20.0):
     p.nchars = chars
     p.text_end_dot = ws[-1].text[-1:] in ".;,!?" if ws else False
     p.list_item = _is_list_start([ws[0]]) if ws else False
+    p.numbered = p.list_item and ws[0].text[:1].isdigit()
     p.cell = cell
     p.nlines = len(lines) if lines else len({w.line for w in ws})
     if cell or not lines or container is None:
