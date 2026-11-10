@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from . import formatting, layout, postfix, preprocess, spell, superscript, tess, textlayout
+from . import formatting, langdetect, layout, postfix, preprocess, spell, superscript, tess, textlayout
 
 PSM_CHOICES = {
     "auto": (tess.PSM_AUTO, "Авто: колонки, таблицы, рисунки, оформление"),
@@ -27,7 +27,7 @@ LOW_CONF = 60.0
 
 @dataclass
 class Settings:
-    langs: str = "rus+eng"
+    langs: str = "auto"              # «auto» — определить по документу; иначе «rus+eng»
     layout: str = "auto"
     prep: preprocess.Options = field(default_factory=preprocess.Options)
     use_pdf_text: bool = True        # брать готовый текстовый слой PDF, если он есть
@@ -52,6 +52,7 @@ class PageResult:
     seconds: float = 0.0
     text: str = ""
     spans: list = field(default_factory=list)   # (start, end, word_index) в self.text
+    langs: str = ""                             # языки, которыми распознана страница
 
     def relayout(self, keep_lines: bool, dehyphenate: bool):
         self.text, self.spans = textlayout.layout(self.data, keep_lines, dehyphenate)
@@ -141,17 +142,87 @@ class Recognizer:
         self._lock = threading.Lock()
         self.cancel_event = threading.Event()
         self._pool = None
+        self.doc_langs = ""              # языки, определённые по документу (режим «auto»)
 
     # --- движки -----------------------------------------------------------
-    def _engine(self):
-        e = getattr(self._local, "engine", None)
+    def _engine(self, langs=None):
+        langs = langs or self.settings.langs
+        cache = getattr(self._local, "engines", None)
+        if cache is None:
+            cache = self._local.engines = {}
+        e = cache.get(langs)
         if e is None:
             psm = PSM_CHOICES.get(self.settings.layout, PSM_CHOICES["auto"])[0]
-            e = tess.Engine(self.settings.langs, psm=psm)
-            self._local.engine = e
+            e = tess.Engine(langs, psm=psm)
+            cache[langs] = e
             with self._lock:
                 self._engines.append(e)
         return e
+
+    # --- языки ------------------------------------------------------------
+    def _detect_engine(self):
+        cands = langdetect.candidates()
+        if not cands:
+            return None
+        key = "detect:" + "+".join(cands)
+        cache = getattr(self._local, "engines", None)
+        if cache is None:
+            cache = self._local.engines = {}
+        e = cache.get(key)
+        if e is None:
+            e = tess.Engine("+".join(cands), psm=tess.PSM_AUTO)
+            cache[key] = e
+            with self._lock:
+                self._engines.append(e)
+        return e
+
+    def _page_langs(self, gray, dpi) -> str:
+        """Языки для страницы: заданные, определённые по документу или по самой странице."""
+        if not langdetect.is_auto(self.settings.langs):
+            return self.settings.langs
+        if self.doc_langs:
+            return self.doc_langs
+        eng = self._detect_engine()
+        if eng is None:
+            return langdetect.fallback()
+        try:
+            return langdetect.detect(eng, gray, dpi)
+        except InterruptedError:
+            raise
+        except Exception:  # noqa: BLE001
+            return langdetect.fallback()
+
+    def detect_document_langs(self, refs) -> str:
+        """Определяет языки по нескольким страницам документа (первая, средняя, последняя)."""
+        n = len(refs)
+        if n == 0:
+            return langdetect.fallback()
+        words = []
+        eng = None
+        for i in sorted({0, n // 2, n - 1}):
+            try:
+                ref = refs[i]
+                if hasattr(ref, "load"):
+                    image, dpi = ref.load()
+                    layer = ref.pdf_words(dpi) if (self.settings.use_pdf_text and ref.kind == "pdf") else None
+                    mode = getattr(ref, "hint_mode", "")
+                else:
+                    (image, dpi), layer, mode = ref, None, ""
+                if layer:
+                    words += [t[0] for t in layer]
+                    continue
+                popts = dataclasses.replace(self.settings.prep, mode=mode) if mode else self.settings.prep
+                prep = preprocess.prepare(image, popts, self._osd())
+                eng = eng or self._detect_engine()
+                if eng is None:
+                    break
+                d = eng.recognize(langdetect.sample(prep.ocr), dpi=int(max(70, min(1200, (dpi or 300) * prep.scale))))
+                words += [w.text for w in d.words if w.conf >= 55]
+            except InterruptedError:
+                raise
+            except Exception:  # noqa: BLE001
+                continue
+        return langdetect.choose(words)
 
     def _osd(self):
         o = getattr(self._local, "osd", None)
@@ -202,24 +273,29 @@ class Recognizer:
         popts = dataclasses.replace(s.prep, mode=mode) if mode else s.prep
         prep = preprocess.prepare(image, popts, self._osd())
         self._check()
-        eng = self._engine()
         src_dpi = dpi or 300
         dpi_eff = int(max(70, min(1200, src_dpi * prep.scale)))
+        try:
+            langs = self._page_langs(prep.ocr, dpi_eff)
+        except InterruptedError:
+            raise Cancelled()
+        eng = self._engine(langs)
         dpi_known = _dpi_trusted(dpi, image.shape)
         try:
             data = None
             if s.layout == "auto":
-                data = self._recognize_layout(eng, prep, dpi_eff, dpi_known)
+                data = self._recognize_layout(eng, prep, dpi_eff, dpi_known, langs)
             if data is None:
                 data = eng.recognize(prep.ocr, dpi=dpi_eff)
                 _drop_noise(data)
                 ink = layout.binarize(prep.ocr)
                 meta = {bid: (b.box if b.kind != "image" else b.box) for bid, b in data.blocks.items()}
                 cont = _page_container(data)
-                postfix.fix_scripts(data, s.langs)
+                postfix.fix_scripts(data, langs)
                 postfix.fix_bullets_and_noise(data)
+                postfix.fix_single_letters(data)
                 if s.spellcheck:
-                    spell.check_words(data, s.langs)
+                    spell.check_words(data, langs)
                 formatting.analyze(data, ink, {k: cont for k in meta}, dpi_eff, dpi_known,
                                    layout.char_height(ink))
         except InterruptedError:
@@ -229,11 +305,11 @@ class Recognizer:
         data.dpi = src_dpi
         data.dpi_known = dpi_known
         res = PageResult(data=data, display=prep.display, dpi=dpi or 0, notes=prep.summary(),
-                         seconds=time.time() - t0)
+                         seconds=time.time() - t0, langs=langs)
         res.relayout(s.keep_lines, s.dehyphenate)
         return res
 
-    def _recognize_layout(self, eng, prep, dpi_eff, dpi_known):
+    def _recognize_layout(self, eng, prep, dpi_eff, dpi_known, langs):
         """Распознавание по собственному анализу макета: блоки, колонки, таблицы, рисунки."""
         gray = prep.ocr
         seeds = [b for t, b in eng.analyse_layout(gray, dpi_eff) if t in tess.IMAGE_TYPES]
@@ -310,10 +386,11 @@ class Recognizer:
         except Exception:  # noqa: BLE001 — знаки сносок не должны ронять распознавание страницы
             pass
         data.words.sort(key=lambda w: (order_idx[w.block], w.cell or (0, 0), w.line, w.box[0]))
-        postfix.fix_scripts(data, self.settings.langs)
+        postfix.fix_scripts(data, langs)
         postfix.fix_bullets_and_noise(data)
+        postfix.fix_single_letters(data)
         if self.settings.spellcheck:
-            spell.check_words(data, self.settings.langs)
+            spell.check_words(data, langs)
         formatting.analyze(data, ink_nolines, meta, dpi_eff, dpi_known, lay.ch)
         return data
 
@@ -342,6 +419,12 @@ class Recognizer:
             if isinstance(e, tess.Engine):
                 e.cancel_flag.clear()
         results = [None] * len(refs)
+        self.doc_langs = ""
+        if langdetect.is_auto(self.settings.langs) and refs:
+            try:
+                self.doc_langs = self.detect_document_langs(refs)
+            except InterruptedError:
+                self.doc_langs = langdetect.fallback()
         if self._pool is None:
             # постоянный пул: движки (загруженные модели) живут между запусками
             self._pool = ThreadPoolExecutor(max_workers=self.settings.worker_count(),

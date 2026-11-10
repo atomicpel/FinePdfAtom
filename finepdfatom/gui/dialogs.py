@@ -43,9 +43,14 @@ class SettingsDialog(QDialog):
         # Языки
         g = QGroupBox("Языки документа")
         v = QVBoxLayout(g)
+        self.auto_lang = QCheckBox("Определять язык документа автоматически")
+        self.auto_lang.setChecked(st.langs == "auto")
+        v.addWidget(self.auto_lang)
         self.langs = QListWidget()
         self.langs.setMinimumHeight(150)
-        chosen = set(st.langs.split("+"))
+        self.langs.setDisabled(st.langs == "auto")
+        self.auto_lang.toggled.connect(self.langs.setDisabled)
+        chosen = set(st.langs.split("+")) if st.langs != "auto" else {"rus", "eng"}
         for code in tess.available_languages():
             it = QListWidgetItem(lang_title(code))
             it.setData(Qt.UserRole, code)
@@ -149,6 +154,8 @@ class SettingsDialog(QDialog):
     def _save(self):
         langs = [self.langs.item(i).data(Qt.UserRole) for i in range(self.langs.count())
                  if self.langs.item(i).checkState() == Qt.Checked]
+        if self.auto_lang.isChecked():
+            langs = ["auto"]
         if not langs:
             QMessageBox.warning(self, "Языки", "Отметьте хотя бы один язык.")
             return
@@ -303,7 +310,9 @@ class BatchWorker(QThread):
                              if not isinstance(r, Exception)]
                     base = os.path.join(self.outdir, os.path.splitext(os.path.basename(f))[0])
                     for fm in self.fmts:
-                        out = base + "." + fm
+                        out = base + "." + export.ext_of(fm)
+                        if fm == "pdfa" and "pdf" in self.fmts:
+                            out = base + ".pdfa.pdf"
                         if os.path.abspath(out) == os.path.abspath(f):
                             out = base + ".ocr." + fm
                         export.save(pages, out, fm, self.quality, mode=self.mode)
@@ -343,7 +352,7 @@ class BatchDialog(QDialog):
         fm_row = QHBoxLayout()
         self.fmt_boxes = {}
         saved = (config.get("batch/formats", "pdf") or "pdf").split(",")
-        for k in ("pdf", "docx", "odt", "xlsx", "html", "txt"):
+        for k in ("pdf", "pdfa", "docx", "odt", "rtf", "xlsx", "csv", "pptx", "html", "txt"):
             cb = QCheckBox(k.upper())
             cb.setChecked(k in saved)
             self.fmt_boxes[k] = cb

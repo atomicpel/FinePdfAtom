@@ -32,7 +32,7 @@ class Config:
             denoise=self._b("prep/denoise", False),
         )
         return ocr.Settings(
-            langs=self.get("ocr/langs", "rus+eng"),
+            langs=self.get("ocr/langs", "auto"),
             layout=self.get("ocr/layout", "auto"),
             prep=prep,
             use_pdf_text=self._b("ocr/use_pdf_text", True),

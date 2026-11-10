@@ -116,6 +116,8 @@ class Checker:
         """Не проверяем: числа, коды, аббревиатуры, одиночные буквы, слова со смешанным алфавитом."""
         if len(w) < 2 or any(ch.isdigit() for ch in w):
             return True
+        if "@" in w or "/" in w or "." in w or "_" in w:      # адреса сайтов и почты, имена файлов
+            return True
         if w.isupper() and len(w) <= 5:
             return True
         return _script(w) in ("", "mixed")

@@ -1,4 +1,5 @@
-"""Экспорт результатов: PDF с текстовым слоем, DOCX, ODT, XLSX, HTML, TXT."""
+"""Экспорт: PDF с текстовым слоем, PDF/A, DOCX, ODT, RTF, XLSX, CSV, PPTX, HTML, TXT
+и форматы LibreOffice (DOC, ODS, XLS, ODP, PPT, EPUB, FB2), если он установлен."""
 from __future__ import annotations
 
 import io
@@ -12,12 +13,51 @@ from . import paths
 
 FORMATS = {
     "pdf": "PDF с поиском по тексту (*.pdf)",
+    "pdfa": "PDF/A-2b для архива (*.pdf)",
     "docx": "Документ Word (*.docx)",
     "odt": "Документ LibreOffice Writer (*.odt)",
+    "rtf": "Документ RTF (*.rtf)",
     "xlsx": "Таблица Excel (*.xlsx)",
+    "csv": "Таблицы CSV (*.csv)",
+    "pptx": "Презентация PowerPoint (*.pptx)",
     "html": "Веб-страница (*.html)",
     "txt": "Текст (*.txt)",
 }
+
+# Форматы через установленный LibreOffice: расширение → (из чего делаем, название)
+LO_FORMATS = {
+    "doc": ("docx", "Документ Word 97–2003 (*.doc)"),
+    "ods": ("xlsx", "Таблица LibreOffice Calc (*.ods)"),
+    "xls": ("xlsx", "Таблица Excel 97–2003 (*.xls)"),
+    "odp": ("pptx", "Презентация LibreOffice Impress (*.odp)"),
+    "ppt": ("pptx", "Презентация PowerPoint 97–2003 (*.ppt)"),
+    "epub": ("docx", "Электронная книга EPUB (*.epub)"),
+}
+
+
+def ext_of(fmt: str) -> str:
+    return "pdf" if fmt == "pdfa" else fmt
+
+
+def soffice_path():
+    import shutil
+    for name in ("soffice", "libreoffice", "loffice"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for p in ("/opt/libreoffice/program/soffice", "/usr/lib/libreoffice/program/soffice"):
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def all_formats() -> dict:
+    """Все доступные форматы (с LibreOffice — больше)."""
+    out = dict(FORMATS)
+    if soffice_path():
+        out.update({k: v[1] for k, v in LO_FORMATS.items()})
+    return out
+
 
 PDF_QUALITY = {
     "color": "Цветной, высокое качество",
@@ -133,7 +173,7 @@ def _add_text_layer(page, words, k, fontname, font):
                          morph=(pt, fitz.Matrix(sx, 1)))
 
 
-def save_pdf(pages, path, quality="color", title="", progress=None):
+def save_pdf(pages, path, quality="color", title="", progress=None, pdfa=False):
     import fitz
     font = fitz.Font(fontfile=_font_path())
     out = fitz.open()
@@ -142,7 +182,9 @@ def save_pdf(pages, path, quality="color", title="", progress=None):
         ref = p.ref
         same_geometry = (ref is not None and getattr(ref, "kind", "") == "pdf" and r.dpi
                          and "повёрнуто" not in r.notes and "перекос" not in r.notes)
-        if ref is not None and getattr(ref, "kind", "") == "pdf" and (r.from_text_layer or same_geometry):
+        # для PDF/A исходные страницы не переносим: в них может быть что угодно (шрифты, прозрачность)
+        if not pdfa and ref is not None and getattr(ref, "kind", "") == "pdf" and \
+                (r.from_text_layer or same_geometry):
             # Исходная PDF-страница сохраняется как есть (векторы, качество), добавляется текст
             with fitz.open(ref.path) as src:
                 out.insert_pdf(src, from_page=ref.index, to_page=ref.index)
@@ -167,11 +209,68 @@ def save_pdf(pages, path, quality="color", title="", progress=None):
             _add_text_layer(page, _words(p), k, "OCR", font)
         if progress:
             progress(i + 1, len(pages))
-    out.set_metadata({"title": title or os.path.splitext(os.path.basename(path))[0],
-                      "creator": "FinePdfAtom", "producer": "FinePdfAtom (Tesseract OCR)"})
+    title = title or os.path.splitext(os.path.basename(path))[0]
     out.subset_fonts()
+    if pdfa:
+        _make_pdfa(out, title)
+    else:
+        out.set_metadata({"title": title, "creator": "FinePdfAtom", "producer": "FinePdfAtom (Tesseract OCR)"})
     out.save(path, garbage=4, deflate=True)
     out.close()
+
+
+def _srgb_icc() -> bytes:
+    from PIL import ImageCms
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+def _make_pdfa(doc, title):
+    """Оформляет документ как PDF/A-2b: цветовой профиль sRGB, метаданные XMP, согласованные с Info."""
+    import time
+    from xml.sax.saxutils import escape
+    now = time.localtime()
+    off = time.strftime("%z", now) or "+0000"
+    pdf_date = time.strftime("D:%Y%m%d%H%M%S", now) + "%s'%s'" % (off[:3], off[3:])
+    xmp_date = time.strftime("%Y-%m-%dT%H:%M:%S", now) + "%s:%s" % (off[:3], off[3:])
+    creator, producer = "FinePdfAtom", "FinePdfAtom (Tesseract OCR)"
+    doc.set_metadata({"title": title, "creator": creator, "producer": producer,
+                      "creationDate": pdf_date, "modDate": pdf_date})
+    # PDF/A требует у встроенных шрифтов CIDFontType2 явной таблицы CID → глиф
+    for x in range(1, doc.xref_length()):
+        try:
+            if doc.xref_get_key(x, "Subtype")[1] == "/CIDFontType2" and \
+                    doc.xref_get_key(x, "CIDToGIDMap")[0] == "null":
+                doc.xref_set_key(x, "CIDToGIDMap", "/Identity")
+        except Exception:  # noqa: BLE001
+            pass
+    icc = doc.get_new_xref()
+    doc.update_object(icc, "<</N 3>>")
+    doc.update_stream(icc, _srgb_icc())
+    oi = doc.get_new_xref()
+    doc.update_object(oi, "<</Type/OutputIntent/S/GTS_PDFA1/OutputConditionIdentifier(sRGB IEC61966-2.1)"
+                          "/Info(sRGB IEC61966-2.1)/DestOutputProfile %d 0 R>>" % icc)
+    doc.xref_set_key(doc.pdf_catalog(), "OutputIntents", "[%d 0 R]" % oi)
+    xmp = """<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about="" xmlns:pdfaid="http://www.aiim.org/pdfa/ns/id/">
+   <pdfaid:part>2</pdfaid:part><pdfaid:conformance>B</pdfaid:conformance>
+  </rdf:Description>
+  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
+   <dc:format>application/pdf</dc:format>
+   <dc:title><rdf:Alt><rdf:li xml:lang="x-default">%(title)s</rdf:li></rdf:Alt></dc:title>
+  </rdf:Description>
+  <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+   <xmp:CreatorTool>%(creator)s</xmp:CreatorTool>
+   <xmp:CreateDate>%(date)s</xmp:CreateDate><xmp:ModifyDate>%(date)s</xmp:ModifyDate>
+  </rdf:Description>
+  <rdf:Description rdf:about="" xmlns:pdf="http://ns.adobe.com/pdf/1.3/">
+   <pdf:Producer>%(producer)s</pdf:Producer>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>""" % dict(title=escape(title), creator=escape(creator), producer=escape(producer), date=xmp_date)
+    doc.set_xml_metadata(xmp)
 
 
 class _W:
@@ -194,46 +293,58 @@ def _unrotate_words(words, page, k):
     return out
 
 
-# --- DOCX / ODT / HTML / XLSX ------------------------------------------------
+# --- документы с оформлением -------------------------------------------------
 
-def _models(pages, mode="formatted", dehyphenate=True):
-    from . import docmodel
-    return [docmodel.build(p.result, p.text, plain=(mode == "plain"), dehyphenate=dehyphenate) for p in pages]
-
-
-def save_docx(pages, path, mode="formatted"):
-    from . import richexport
-    richexport.save_docx(_models(pages, mode), path, os.path.splitext(os.path.basename(path))[0])
+def build_doc(pages, mode="formatted", dehyphenate=True, title=""):
+    """Страницы → документ целиком (колонтитулы, сноски, ссылки, единые стили)."""
+    from . import docanalysis, docmodel
+    models = [docmodel.build(p.result, p.text, plain=(mode == "plain"), dehyphenate=dehyphenate) for p in pages]
+    return docanalysis.plain(models, title) if mode == "plain" else docanalysis.analyze(models, title)
 
 
-def save_odt(pages, path, mode="formatted"):
-    from . import richexport
-    richexport.save_odt(_models(pages, mode), path, os.path.splitext(os.path.basename(path))[0])
-
-
-def save_html(pages, path, mode="formatted"):
-    from . import richexport
-    richexport.save_html(_models(pages, mode), path, os.path.splitext(os.path.basename(path))[0])
-
-
-def save_xlsx(pages, path, mode="formatted"):
-    from . import richexport
-    richexport.save_xlsx(_models(pages, mode), path)
+def _convert_lo(src, dst):
+    """Преобразование через LibreOffice (без окна)."""
+    import shutil
+    import subprocess
+    import tempfile
+    exe = soffice_path()
+    if not exe:
+        raise RuntimeError("Для этого формата нужен LibreOffice (команда soffice не найдена).")
+    ext = os.path.splitext(dst)[1].lstrip(".")
+    with tempfile.TemporaryDirectory(prefix="finepdfatom-lo-") as tmp:
+        # отдельный профиль: не мешаем открытому LibreOffice пользователя
+        r = subprocess.run([exe, "-env:UserInstallation=file://" + os.path.join(tmp, "profile"), "--headless",
+                            "--convert-to", ext, "--outdir", tmp, src],
+                           capture_output=True, text=True, timeout=600)
+        out = os.path.join(tmp, os.path.splitext(os.path.basename(src))[0] + "." + ext)
+        if not os.path.exists(out):
+            raise RuntimeError("LibreOffice не смог сохранить %s: %s" % (ext.upper(), (r.stderr or r.stdout).strip()[:300]))
+        shutil.move(out, dst)
 
 
 def save(pages, path, fmt=None, pdf_quality="color", progress=None, mode="formatted"):
     fmt = (fmt or os.path.splitext(path)[1].lstrip(".")).lower()
-    if fmt == "pdf":
-        save_pdf(pages, path, pdf_quality, progress=progress)
-    elif fmt == "txt":
-        save_txt(pages, path)
-    elif fmt == "docx":
-        save_docx(pages, path, mode)
-    elif fmt == "odt":
-        save_odt(pages, path, mode)
-    elif fmt in ("html", "htm"):
-        save_html(pages, path, mode)
-    elif fmt == "xlsx":
-        save_xlsx(pages, path, mode)
-    else:
+    if fmt == "htm":
+        fmt = "html"
+    title = os.path.splitext(os.path.basename(path))[0]
+    if fmt in ("pdf", "pdfa"):
+        return save_pdf(pages, path, pdf_quality, progress=progress, pdfa=(fmt == "pdfa"))
+    if fmt == "txt":
+        return save_txt(pages, path)
+    if fmt in LO_FORMATS:
+        import tempfile
+        base = LO_FORMATS[fmt][0]
+        with tempfile.TemporaryDirectory(prefix="finepdfatom-") as tmp:
+            mid = os.path.join(tmp, "document." + base)
+            save(pages, mid, base, pdf_quality, None, mode)
+            _convert_lo(mid, path)
+        return None
+    from . import richexport
+    writers = {"docx": richexport.save_docx, "odt": richexport.save_odt, "rtf": richexport.save_rtf,
+               "html": richexport.save_html, "xlsx": richexport.save_xlsx, "csv": richexport.save_csv,
+               "pptx": richexport.save_pptx}
+    if fmt not in writers:
         raise ValueError("Неизвестный формат: %s" % fmt)
+    doc = build_doc(pages, mode, title=title)
+    writers[fmt](doc, path, title)
+    return doc

@@ -65,7 +65,7 @@ class ExportWorker(QThread):
 
     def run(self):
         try:
-            export.save(self.pages, self.path, self.fmt, self.quality,
+            self.doc = export.save(self.pages, self.path, self.fmt, self.quality,
                         progress=lambda a, b: self.progress.emit(a, b), mode=self.mode)
             self.finishedOk.emit(self.path)
         except Exception as e:  # noqa: BLE001

@@ -22,9 +22,12 @@ def build_parser():
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("-o", "--output", help="один итоговый файл (все страницы подряд); формат по расширению")
     g.add_argument("--outdir", help="папка: отдельный результат для каждого входного файла")
-    p.add_argument("--format", default="pdf", help="форматы для --outdir через запятую: pdf,docx,odt,xlsx,html,txt")
+    p.add_argument("--format", default="pdf", help="форматы для --outdir через запятую: pdf,pdfa,docx,odt,rtf,xlsx,csv,pptx,html,txt"
+                        " (с LibreOffice ещё doc,ods,xls,odp,ppt,epub)")
+    p.add_argument("--pdfa", action="store_true", help="для -o файл.pdf: сохранить как PDF/A-2b")
     p.add_argument("--plain", action="store_true", help="без оформления (DOCX/ODT/HTML: только абзацы и таблицы)")
-    p.add_argument("-l", "--lang", default="rus+eng", help="языки, например rus+eng (по умолчанию)")
+    p.add_argument("-l", "--lang", default="auto",
+                   help="языки: auto — определить по документу (по умолчанию), или, например, rus+eng")
     p.add_argument("--mode", default="auto", choices=list(preprocess.MODES), help="тип изображений")
     p.add_argument("--layout", default="auto", choices=list(ocr.PSM_CHOICES), help="разметка страницы")
     p.add_argument("--no-rotate", action="store_true", help="не поворачивать страницы автоматически")
@@ -44,7 +47,7 @@ def main(argv=None) -> int:
     if not files:
         say("Нет подходящих файлов.")
         return 2
-    missing = [l for l in a.lang.split("+") if l not in tess.available_languages()]
+    missing = [] if a.lang == "auto" else [l for l in a.lang.split("+") if l not in tess.available_languages()]
     if missing:
         say("Нет моделей языков: %s. Доступны: %s" % (", ".join(missing), ", ".join(tess.available_languages())))
         return 2
@@ -72,7 +75,10 @@ def main(argv=None) -> int:
         if a.output:
             refs = [r for f in files for r in sources.page_refs(f)]
             pages = run(refs, "Документ")
-            export.save(pages, a.output, pdf_quality=a.pdf_quality, mode="plain" if a.plain else "formatted")
+            doc = export.save(pages, a.output, "pdfa" if a.pdfa else None, pdf_quality=a.pdf_quality,
+                              mode="plain" if a.plain else "formatted")
+            if doc is not None and doc.summary():
+                say("В документе найдено: %s" % doc.summary())
             say("Сохранено: %s" % a.output)
         else:
             os.makedirs(a.outdir, exist_ok=True)
@@ -81,7 +87,9 @@ def main(argv=None) -> int:
                 pages = run(sources.page_refs(f), os.path.basename(f))
                 base = os.path.join(a.outdir, os.path.splitext(os.path.basename(f))[0])
                 for fm in fmts:
-                    out = base + "." + fm
+                    out = base + "." + export.ext_of(fm)
+                    if fm == "pdfa" and "pdf" in fmts:
+                        out = base + ".pdfa.pdf"
                     if os.path.abspath(out) == os.path.abspath(f):
                         out = base + ".ocr." + fm
                     export.save(pages, out, fm, pdf_quality=a.pdf_quality, mode="plain" if a.plain else "formatted")

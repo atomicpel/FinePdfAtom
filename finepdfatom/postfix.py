@@ -120,3 +120,25 @@ def fix_bullets_and_noise(data):
                 w.text = "•"
         keep.append(w)
     data.words = keep
+
+
+_ONE_LETTER = set("ВСКУОИАЯ")
+
+
+def fix_single_letters(data):
+    """«информации В автоматизированных» → «в»; одинокая «З» в ячейке таблицы → «3»."""
+    words = data.words
+    cell_count = {}
+    for w in words:
+        if w.cell is not None:
+            k = (w.block, w.cell)
+            cell_count[k] = cell_count.get(k, 0) + 1
+    for i, w in enumerate(words):
+        t = w.text
+        if w.cell is not None and cell_count.get((w.block, w.cell)) == 1 and t in ("З", "з", "З.", "З)"):
+            w.text = t.replace("З", "3").replace("з", "3")
+            continue
+        if len(t) == 1 and t in _ONE_LETTER and 0 < i < len(words) - 1:
+            a, b = words[i - 1], words[i + 1]
+            if a.para == w.para == b.para and a.text[-1:].islower() and b.text[:1].islower():
+                w.text = t.lower()

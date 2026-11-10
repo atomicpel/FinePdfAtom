@@ -138,7 +138,7 @@ cp "$SRC/lodict/uk_UA/README_uk_UA.txt" "$ROOT/LICENSES/dict-uk_UA-MPL.txt"
 cat > "$ROOT/LICENSES/README.txt" <<'EOF'
 Компоненты: Tesseract OCR (Apache-2.0), Leptonica (BSD-2), Python (PSF), Qt 5 / PyQt5 (GPL-3),
 OpenCV (Apache-2.0), PyMuPDF / MuPDF (AGPL-3), NumPy (BSD), Pillow (MIT-CMU), python-docx (MIT),
-odfpy (Apache-2.0/GPL), lxml (BSD), openpyxl (MIT), spylls (MPL-2.0), словари Hunspell
+odfpy (Apache-2.0/GPL), lxml (BSD), openpyxl (MIT), python-pptx (MIT), XlsxWriter (BSD), spylls (MPL-2.0), словари Hunspell
 (ru_RU — BSD, en_US — SCOWL, uk_UA — MPL), шрифт DejaVu (свободная лицензия Bitstream Vera).
 Лицензии колёс Python лежат в python/lib/python3.11/site-packages/*.dist-info.
 EOF
@@ -183,7 +183,7 @@ FINEPDFATOM_HOME=$ROOT "$PY" -I "$ROOT/app/run.py" --version
 QT_QPA_PLATFORM=offscreen FINEPDFATOM_HOME=$ROOT HOME=$W/home "$PY" -I -c "
 import sys; sys.path.insert(0, '$ROOT/app')
 from PyQt5.QtWidgets import QApplication; from PyQt5 import QtSvg; app = QApplication([])
-import fitz, cv2, docx, odf, openpyxl, spylls; print('Qt OK')"
+import fitz, cv2, docx, odf, openpyxl, spylls, pptx; print('Qt OK')"
 
 # -------------------------------------------------------------------- .deb
 log "Пакет .deb"

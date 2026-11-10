@@ -205,8 +205,12 @@ class MainWindow(QMainWindow):
         sm = QMenu(self)
         for fmt, title in export.FORMATS.items():
             sm.addAction(title.split(" (")[0], lambda f=fmt: self.save_as(f))
+        if export.soffice_path():
+            lo = sm.addMenu("Другие форматы (через LibreOffice)")
+            for fmt, (_b, title) in export.LO_FORMATS.items():
+                lo.addAction(title.split(" (")[0], lambda f=fmt: self.save_as(f))
         sm.addSeparator()
-        self.act_keep_format = sm.addAction("Сохранять оформление (колонки, шрифты, таблицы, рисунки)")
+        self.act_keep_format = sm.addAction("Сохранять оформление (колонтитулы, сноски, колонки, таблицы)")
         self.act_keep_format.setCheckable(True)
         self.act_keep_format.setChecked(self.config.get("export/mode", "formatted") == "formatted")
         self.act_keep_format.toggled.connect(
@@ -452,7 +456,14 @@ class MainWindow(QMainWindow):
     # ============================================================ языки/режим
     def _fill_lang_menu(self):
         self.lang_menu.clear()
-        chosen = set(self.config.get("ocr/langs", "rus+eng").split("+"))
+        cur = self.config.get("ocr/langs", "auto")
+        chosen = set(cur.split("+"))
+        auto = self.lang_menu.addAction("Определять автоматически")
+        auto.setCheckable(True)
+        auto.setChecked(cur == "auto")
+        auto.triggered.connect(lambda on: (self.config.set("ocr/langs", "auto" if on else "rus+eng"),
+                                           self._settings_changed()))
+        self.lang_menu.addSeparator()
         for code in tess.available_languages():
             a = self.lang_menu.addAction(lang_title(code))
             a.setCheckable(True)
@@ -462,17 +473,21 @@ class MainWindow(QMainWindow):
         self.lang_menu.addAction("Добавить язык…", self.open_settings)
 
     def _toggle_lang(self, code, on):
-        langs = [l for l in self.config.get("ocr/langs", "rus+eng").split("+") if l]
+        langs = [l for l in self.config.get("ocr/langs", "auto").split("+") if l and l != "auto"]
         if on and code not in langs:
             langs.append(code)
-        if not on and code in langs and len(langs) > 1:
+        if not on and code in langs:
             langs.remove(code)
-        self.config.set("ocr/langs", "+".join(langs))
+        self.config.set("ocr/langs", "+".join(langs) or "auto")
         self._settings_changed()
 
     def _update_lang_button(self):
-        langs = self.config.get("ocr/langs", "rus+eng").split("+")
-        self.btn_lang.setText(" + ".join(l.upper()[:3] for l in langs))
+        cur = self.config.get("ocr/langs", "auto")
+        if cur == "auto":
+            found = getattr(getattr(self.current, "result", None), "langs", "") if getattr(self, "current", None) else ""
+            self.btn_lang.setText("Авто" + (": " + " + ".join(l.upper()[:3] for l in found.split("+")) if found else ""))
+        else:
+            self.btn_lang.setText(" + ".join(l.upper()[:3] for l in cur.split("+")))
 
     def _mode_changed(self):
         self.config.set("prep/mode", self.mode_cb.currentData())
@@ -661,7 +676,9 @@ class MainWindow(QMainWindow):
                                    ("Страница ещё не распознана" if p else ""))
             return
         r = p.result
-        self.text.set_langs(self.config.get("ocr/langs", "rus+eng"))
+        cfg_langs = self.config.get("ocr/langs", "auto")
+        self.text.set_langs(cfg_langs if cfg_langs != "auto" else (getattr(r, "langs", "") or "rus+eng+ukr"))
+        self._update_lang_button()
         if p.text is not None:
             self.text.load(p.text)
         else:
@@ -868,7 +885,7 @@ class MainWindow(QMainWindow):
         if self.worker is not None:
             self._status("Распознавание уже идёт…")
             return
-        langs = self.config.get("ocr/langs", "rus+eng").split("+")
+        langs = [l for l in self.config.get("ocr/langs", "auto").split("+") if l != "auto"]
         missing = [l for l in langs if l not in tess.available_languages()]
         if missing:
             QMessageBox.warning(self, "Языки", "Нет моделей: %s" % ", ".join(missing))
@@ -972,12 +989,13 @@ class MainWindow(QMainWindow):
                 return
         base = self.pages[0].ref.path or os.path.join(os.path.expanduser("~"), "Документ")
         default = os.path.join(self.config.get("ui/save_dir", os.path.dirname(base)),
-                               os.path.splitext(os.path.basename(base))[0] + ("_ocr" if fmt == "pdf" else "") + "." + fmt)
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить как", default, export.FORMATS[fmt])
+                               os.path.splitext(os.path.basename(base))[0] +
+                               {"pdf": "_ocr", "pdfa": "_pdfa"}.get(fmt, "") + "." + export.ext_of(fmt))
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить как", default, export.all_formats()[fmt])
         if not path:
             return
-        if not path.lower().endswith("." + fmt):
-            path += "." + fmt
+        if not path.lower().endswith("." + export.ext_of(fmt)):
+            path += "." + export.ext_of(fmt)
         self.config.set("ui/save_dir", os.path.dirname(path))
         items = [export.ExportPage(p.result, p.final_text(), p.ref if p.ref.kind == "pdf" and not p.region else None)
                  for p in pages]
@@ -994,7 +1012,9 @@ class MainWindow(QMainWindow):
     def _saved(self, path):
         self.progress.hide()
         size = os.path.getsize(path)
-        self._status("Сохранено: %s (%s)" % (path, _human(size)))
+        doc = getattr(self._export, "doc", None)
+        found = (" · найдено: " + doc.summary()) if doc is not None and doc.summary() else ""
+        self._status("Сохранено: %s (%s)%s" % (path, _human(size), found))
 
     # =============================================================== прочее
     def open_settings(self):
